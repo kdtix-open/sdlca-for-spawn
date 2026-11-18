@@ -1,0 +1,49 @@
+name: Documentation improvement
+description: Something is missing, unclear, outdated or wrong in the docs.
+title: "[Docs]: "
+labels: ["documentation", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation fixes are some of the most useful contributions, and a great first one. Thank you.
+        Please do not paste tokens, invite codes, other people's messages, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: input
+    id: where
+    attributes:
+      label: Which page or file?
+      description: A link or a path such as `docs/getting-started.md`.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear, missing or wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would make it better?
+      description: Suggested wording is welcome but optional.
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you like to make the change yourself?
+      options:
+        - Yes, I will open a pull request
+        - Yes, with some guidance
+        - No, I am only reporting it
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-help
+    attributes:
+      label: Did an AI tool help write this?
+      description: "Choose Yes if this is true: An AI tool did more than spelling, formatting, autocomplete or a mechanical rename. Either answer is fine. Please tell us, and confirm you checked it yourself."
+      options:
+        - "No"
+        - Yes, and I reviewed and edited it
+        - Yes, but I have not reviewed it
+    validations:
+      required: true

@@ -1,0 +1,68 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: Apache-2.0
+"""Edit the allowlist: who may trigger work.
+
+usage:
+  sdlca-allow list
+  sdlca-allow slack add <slack-username> <member-id>     e.g. U0123ABCD
+  sdlca-allow slack remove <member-id>
+  sdlca-allow spawn add <owner> <name>        an extra sender for that owner's account: carol or @carol (a person),
+                                              @@helper (an agent)
+  sdlca-allow spawn remove <owner> <name>
+
+An account's owner may always trigger work on their own account. Anyone else is ignored unless listed here
+(fail closed). The file is $SDLCA_SPAWN_HOME/allowlist.json, mode 0600.
+"""
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+os.umask(0o077)  # a folder or file this tool creates is private, as the shell tools make theirs
+HOME = Path(os.environ.get("SDLCA_SPAWN_HOME") or Path.home() / ".sdlca" / "spawn")
+PATH = HOME / "allowlist.json"
+MEMBER_ID = re.compile(r"^[UW][A-Z0-9]{6,}$")
+SPAWN_NAME = re.compile(r"^[a-z0-9_]{1,64}$")
+SENDER = re.compile(r"^(@{1,2})?[a-z0-9_]{1,64}$")  # carol, @carol (a person) or @@helper (an agent)
+
+
+def load():
+    if PATH.exists():
+        return json.loads(PATH.read_text(encoding="utf-8"))
+    return {"slack": {"workspace": "", "members": []}, "spawn": {}}
+
+
+def save(data):
+    HOME.mkdir(parents=True, exist_ok=True)
+    tmp = PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(PATH)
+
+
+def main(argv):
+    data = load()
+    data.setdefault("slack", {}).setdefault("members", [])
+    data.setdefault("spawn", {})
+    if argv[:1] == ["list"] and len(argv) == 1:
+        print(json.dumps({k: v for k, v in data.items() if not k.startswith("_")}, indent=2))
+        return 0
+    if argv[:2] == ["slack", "add"] and len(argv) == 4 and MEMBER_ID.fullmatch(argv[3]):
+        data["slack"]["members"] = [m for m in data["slack"]["members"] if m.get("id") != argv[3]]
+        data["slack"]["members"].append({"username": argv[2], "id": argv[3]})
+    elif argv[:2] == ["slack", "remove"] and len(argv) == 3:
+        data["slack"]["members"] = [m for m in data["slack"]["members"] if m.get("id") != argv[2]]
+    elif argv[:2] == ["spawn", "add"] and len(argv) == 4 and SPAWN_NAME.fullmatch(argv[2]) and SENDER.fullmatch(argv[3]):
+        data["spawn"][argv[2]] = sorted(set(data["spawn"].get(argv[2], [])) | {argv[3]})
+    elif argv[:2] == ["spawn", "remove"] and len(argv) == 4:
+        data["spawn"][argv[2]] = [u for u in data["spawn"].get(argv[2], []) if u != argv[3]]
+    else:
+        sys.exit(__doc__)
+    save(data)
+    print("ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

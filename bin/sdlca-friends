@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Accept pending friend requests from this account's owner, and from nobody else.
+# usage: sdlca-friends <account>
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -eq 1 ] || die "usage: sdlca-friends <account>"
+load_account "$1"
+ORIGIN="$(check_origin "${SPAWN_ORIGIN:-https://www.spawn.co}")"
+FRIENDS="$(spawn_curl "$ORIGIN/api/social/friends")" || die "could not read the friends list"
+OWNER_ID="$(printf '%s' "$FRIENDS" | python3 -I -B -c '
+import json, os, sys
+owner = os.environ["OWNER"]
+for row in json.load(sys.stdin).get("incoming", []):
+    if str(row.get("username", "")).lower() == owner.lower():
+        print(row.get("userId", ""))
+        break
+')"
+[ -n "$OWNER_ID" ] || exit 0
+[[ "$OWNER_ID" =~ ^[0-9a-fA-F-]{8,64}$ ]] || die "unexpected user id in the friends list; not accepting"
+BODY="$(python3 -I -B -c 'import json, sys; print(json.dumps({"user": sys.argv[1], "friend": "accept"}))' "$OWNER_ID")"
+RESULT="$(spawn_curl -X POST -H 'content-type: application/json' --data-binary "$BODY" "$ORIGIN/api/social/relation")" || die "accept failed"
+printf 'friend accept: %s\n' "$(printf '%s' "$RESULT" | python3 -I -B -c 'import json, sys; print(json.load(sys.stdin).get("friend"))')"

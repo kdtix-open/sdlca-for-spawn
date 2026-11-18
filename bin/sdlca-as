@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Run any command as one account's agent: its token file and env are loaded first.
+# usage: sdlca-as <account> <command...>      e.g.  sdlca-as alice spawn client where
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -ge 2 ] || die "usage: sdlca-as <account> <command...>"
+load_account "$1"
+shift
+exec "$@"

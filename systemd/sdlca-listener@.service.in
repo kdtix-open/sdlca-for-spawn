@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# One instance per account:  systemctl --user enable --now sdlca-listener@<account>.service
+# scripts/install.sh renders this file (replacing @CODE_DIR@) into ~/.config/systemd/user/.
+[Unit]
+Description=SDLCA agent kit chat listener (%i)
+
+[Service]
+Type=simple
+ExecStart=@CODE_DIR@/bin/sdlca-listen %i
+Restart=always
+RestartSec=5
+# Back off while the listener keeps failing (for example a refused token): 5 s, growing to 5 minutes.
+RestartSteps=6
+RestartMaxDelaySec=300
+# sdlca-listen exits 78 when SDLCA_AGENT_CMD is not configured: do not restart-loop on that.
+RestartPreventExitStatus=78
+UMask=0077
+NoNewPrivileges=yes
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

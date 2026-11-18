@@ -1,0 +1,26 @@
+SDLCA agent kit
+Copyright 2026 Kreager Digital Transformation Industry-X, LLC (KDTIX) and contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Independence and trademarks. This is an independent, unofficial project. It is
+not created by, affiliated with, endorsed by, sponsored by, or supported by
+Spawn (www.spawn.co, operated by AI Tools, Inc.), Anthropic, OpenAI, Anysphere,
+Slack Technologies, LLC, GitHub, Microsoft, Discord, or any other third party
+named in this project. All product, service and company names, including Spawn,
+Savi, Claude, Claude Code, OpenAI, Codex, Cursor, GitHub, Discord, Playwright
+and Bun, belong to their respective owners and are used only to identify those
+products and describe interoperability. Slack is a trademark and service mark
+of Slack Technologies, Inc., registered in the U.S. and in other countries.
+Section 6 of the Apache License, Version 2.0 grants no permission to use the
+Licensor's names or marks, and nothing in this project grants any right to use
+another party's names, logos or trademarks.
+
+Apart from the text of the Apache License and the Code of Conduct, which is
+adapted from the Contributor Covenant 2.1 under CC BY 4.0 (see
+CODE_OF_CONDUCT.md), this project does not contain or redistribute code,
+documentation, artwork, logos or other content owned by Spawn, Savi, Anthropic,
+OpenAI or other third parties. It calls Spawn's published agent interface and
+uses third-party tools that each user installs separately under their own
+licenses. Those tools are listed in docs/compliance/third-party-licenses.md,
+and the names and credits are in docs/compliance/trademarks-and-credits.md.

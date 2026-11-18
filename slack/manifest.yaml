@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# Example Slack app manifest for the kit's planned Slack bridge. Rename the app and the slash commands as you like.
+# Status: the bridge itself is still in development; this manifest asks for the permissions its planned
+# features need. See docs/slack-bridge.md for what each scope is for and for a smaller starter set.
+_metadata:
+  major_version: 2
+  minor_version: 1
+display_information:
+  name: SDLCA agent kit
+  description: Example app for the planned SDLCA agent kit Slack bridge (not built yet). Unofficial community project.
+  background_color: "#4c1d95"
+  long_description: |-
+    *SDLCA agent kit (unofficial)* is an example Slack app for an open-source kit that lets a person direct AI coding agents from a Slack workspace. The agents run on your own machine with your own accounts, and can build and play-test in Spawn worlds (games hosted at spawn.co). The bridge is still in development, so this page says what it is intended to do.
+
+    *What it is intended to do*
+    - Relay your instructions from a direct message or channel to your agent, only if you are on the allowlist
+    - Show what the agent is doing with emoji reactions, and post summaries and screenshots back
+    - Ask a person to confirm before changes that go live are pushed
+    - Exchange files with Spawn assets, and keep an epic's task list on a channel canvas
+
+    *What it does not do*
+    - It does not run AI models for you. Your AI-provider and Spawn credentials stay on your own machine and go only to the service they belong to
+    - The kit does not use Slack message data to train AI models (check your own AI provider's terms)
+    - It is not a Spawn product, and it does not operate Spawn's AI companion, Savi
+
+    Independent open-source project under the Apache License 2.0 (github.com/kdtix-open/sdlca-for-spawn). Not created by, affiliated with, or supported by Slack Technologies, LLC, Spawn (AI Tools, Inc.), Anthropic or OpenAI. Slack is a trademark and service mark of Slack Technologies, Inc., registered in the U.S. and in other countries. Spawn, Savi, Claude and Codex are names or marks of their respective owners, used only to describe compatibility.
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: sdlca-agent
+    always_online: true
+  slash_commands:
+    - command: /sdlca-build
+      description: Ask the agent to help build something on Spawn
+      usage_hint: help me build xyz
+      should_escape: false
+    - command: /sdlca-play
+      description: Have the agent join a game or play-test what was just built
+      usage_hint: join a game or test play what we just built
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - canvases:read
+      - canvases:write
+      - channels:read
+      - chat:write
+      - commands
+      - files:read
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - reactions:read
+      - reactions:write
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - file_change
+      - file_deleted
+      - file_shared
+      - member_joined_channel
+      - message.groups
+      - message.im
+      - reaction_added
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+  is_mcp_enabled: false

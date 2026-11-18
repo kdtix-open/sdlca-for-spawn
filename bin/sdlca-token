@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Keep Spawn tokens where the kit (and your own scripts) can find them, without ever putting a token on a
+# command line, in your shell history or in a chat.
+#
+# usage: sdlca-token init   <account> --owner <spawn-username> [--username <spawn-username>]
+#        sdlca-token add    <account> --owner <spawn-username> [--username <spawn-username>] [--stdin]
+#        sdlca-token path   <account>
+#        sdlca-token verify <account>
+#        sdlca-token list
+#
+# An account is a token plus an env file in $SDLCA_SPAWN_HOME/accounts/<account>/. The name is one word, or
+# group/name to keep several tokens together, for example one personal token per person for a coordinator:
+#   sdlca-token add sdlca-for-spawn/alice --owner alice
+#   sdlca-token add sdlca-for-spawn/bob   --owner bob
+# init   creates the folder and the env file only (no token yet)
+# add    does that, then asks for the token WITHOUT echoing it (or reads it from stdin with --stdin)
+# path   prints the token file's path, for scripts:  SPAWN_TOKEN_FILE="$(sdlca-token path sdlca-for-spawn/alice)"
+# verify asks Spawn who the token belongs to (network; prints the username, never the token)
+# list   shows every account, its owner and whether a token is stored
+# --owner is the Spawn user who minted the token (and who may command the account); --username is the name
+# the token signs in as (default: the owner), which git uses when it clones with this token.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+usage() { usage_header "$0"; }
+[ "$#" -ge 1 ] || { usage >&2; exit 2; }
+CMD="$1"
+shift
+
+ACCOUNTS="$SDLCA_SPAWN_HOME/accounts"
+ACCOUNT="" OWNER_NAME="" USERNAME="" FROM_STDIN=0
+if [ "$CMD" != list ] && [ "$CMD" != -h ] && [ "$CMD" != --help ]; then
+  [ "$#" -ge 1 ] || die "usage: sdlca-token $CMD <account> ... (try --help)"
+  ACCOUNT="$1"
+  shift
+  valid_account_name "$ACCOUNT" || die "invalid account name '$ACCOUNT' (see --help)"
+fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --owner) OWNER_NAME="${2:-}"; shift 2 ;;
+    --username) USERNAME="${2:-}"; shift 2 ;;
+    --stdin) FROM_STDIN=1; shift ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+private_dirs() { # create accounts/<account> and every folder above it, all mode 0700
+  local path="$ACCOUNTS" part
+  mkdir -p "$SDLCA_SPAWN_HOME"
+  chmod 700 "$SDLCA_SPAWN_HOME"
+  IFS=/ read -ra parts <<< "$ACCOUNT"
+  mkdir -p "$path"
+  chmod 700 "$path"
+  for part in "${parts[@]}"; do
+    path="$path/$part"
+    mkdir -p "$path"
+    chmod 700 "$path"
+  done
+}
+
+check_owner() { # a new account needs a valid --owner; an existing one keeps its env file
+  [ -e "$ACCOUNTS/$ACCOUNT/env" ] && return 0
+  [ -n "$OWNER_NAME" ] || die "need --owner <the Spawn username that minted the token>"
+  [[ "$OWNER_NAME" =~ ^[a-z0-9_]+$ ]] || die "--owner must be a Spawn username (lowercase letters, digits, underscore)"
+  USERNAME="${USERNAME:-$OWNER_NAME}"
+  [[ "$USERNAME" =~ ^[a-z0-9_]+$ ]] || die "--username must be a Spawn username (lowercase letters, digits, underscore)"
+}
+
+write_env() {
+  local env="$ACCOUNTS/$ACCOUNT/env"
+  if [ -e "$env" ]; then
+    echo "kept the existing $env"
+    return
+  fi
+  {
+    printf '# Account env for %s (sourced by the kit: keep it mode 0600)\n' "$ACCOUNT"
+    printf 'OWNER=%q\nSPAWN_USERNAME=%q\nSPAWN_TOKEN_FILE=%q\n' "$OWNER_NAME" "$USERNAME" "$ACCOUNTS/$ACCOUNT/token"
+  } > "$env"
+  chmod 600 "$env"
+  echo "wrote $env"
+}
+
+TOKEN_VALUE=""
+ask_token() { # reads and checks the token into TOKEN_VALUE; creates nothing
+  local tok=""
+  if [ "$FROM_STDIN" -eq 1 ]; then
+    IFS= read -r tok || true
+  else
+    [ -t 0 ] || die "no terminal to ask on: run this in a terminal, or pass --stdin and pipe the token in"
+    IFS= read -rsp "Paste the token for $ACCOUNT, then press Enter (nothing is shown): " tok || true
+    echo
+  fi
+  [ -n "$tok" ] || die "no token entered"
+  [[ "$tok" =~ ^sbk_ ]] && die "that looks like a one-time invite code (sbk_...), not a token; use sdlca-onboard for invites"
+  valid_token "$tok" && [ "${#tok}" -ge 16 ] || die "that does not look like a token (16 or more visible characters, no spaces, quotes or backslashes)"
+  [[ "$tok" =~ ^sak_ ]] || echo "note: the token does not start with sak_ (Spawn's usual prefix); it will be stored anyway" >&2
+  TOKEN_VALUE="$tok"
+}
+
+store_token() {
+  local file="$ACCOUNTS/$ACCOUNT/token" tmp
+  tmp="$(mktemp "$ACCOUNTS/$ACCOUNT/.token.XXXXXX")"
+  printf '%s' "$TOKEN_VALUE" > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$file"
+  echo "stored the token for $ACCOUNT (${#TOKEN_VALUE} characters, mode 600) at $file"
+  TOKEN_VALUE=""
+}
+
+case "$CMD" in
+  -h | --help) usage ;;
+  init)
+    check_owner
+    private_dirs
+    write_env
+    echo "next: sdlca-token add $ACCOUNT --owner ${OWNER_NAME:-<owner>}   (to store the token)"
+    ;;
+  add)
+    check_owner
+    ask_token
+    private_dirs
+    write_env
+    store_token
+    ;;
+  path)
+    [ -e "$ACCOUNTS/$ACCOUNT/env" ] || die "unknown account: $ACCOUNT"
+    printf '%s\n' "$ACCOUNTS/$ACCOUNT/token"
+    ;;
+  verify)
+    load_account "$ACCOUNT"
+    ME="$("$SDLCA_CODE_DIR/bin/sdlca-api" GET /api/agent/v1/me)" || die "Spawn did not accept the token for $ACCOUNT"
+    printf '%s' "$ME" | python3 -I -B -c '
+import json, sys
+try:
+    me = json.load(sys.stdin)
+except ValueError:
+    sys.exit("Spawn answered, but not with JSON")
+print("username:   ", me.get("username", "(none)"))
+print("handle:     ", me.get("handle", "(none)"))
+print("account kind:", me.get("actorClass", "(unknown)"))
+print("linked to:  ", me.get("linkedTo", "(nobody)"))
+print("worlds:     ", len(me.get("worlds", [])))
+if me.get("actorClass") == "human":
+    print()
+    print("note: this token signs in AS A PERSON, not as an agent. Spawn describes personal tokens as being for")
+    print("      the own scripts of the owner, and says agents make their own. Whatever you do with it appears under")
+    print("      the name of that person.")
+'
+    ;;
+  list)
+    found=0
+    while IFS= read -r env; do
+      dir="$(dirname "$env")"
+      name="${dir#"$ACCOUNTS"/}"
+      owner="$(sed -n 's/^OWNER=//p' "$env" | head -n 1)"
+      state="missing"
+      if [ -s "$dir/token" ]; then state="stored (mode $(stat -c %a "$dir/token"))"; fi
+      printf '%-34s owner=%-16s token=%s\n' "$name" "${owner:-?}" "$state"
+      found=1
+    done < <(find "$ACCOUNTS" -mindepth 2 -maxdepth 3 -name env -type f 2> /dev/null | sort)
+    [ "$found" -eq 1 ] || echo "no accounts yet (create one with: sdlca-token add <account> --owner <spawn-username>)"
+    ;;
+  *) die "unknown command: $CMD (try --help)" ;;
+esac

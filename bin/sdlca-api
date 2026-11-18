@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Call the Spawn API with the current account's token. The token goes in a header read from stdin,
+# so it never appears in `ps`, and it is only ever sent to the Spawn origin.
+# usage: sdlca-api <GET|POST|PATCH|PUT|DELETE> <path-or-url> [json-body]
+# The account comes from SPAWN_TOKEN_FILE (set it, or run under `sdlca-as <account>`).
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -ge 2 ] || die "usage: sdlca-api <METHOD> <path-or-url> [json-body]"
+: "${SPAWN_TOKEN_FILE:?SPAWN_TOKEN_FILE is not set; run under sdlca-as <account>}"
+[ -r "$SPAWN_TOKEN_FILE" ] || die "token file is not readable: $SPAWN_TOKEN_FILE"
+ORIGIN="$(check_origin "${SPAWN_ORIGIN:-https://www.spawn.co}")"
+METHOD="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+TARGET="$2"
+BODY="${3:-}"
+# curl reads a local file when --data-binary starts with @ (and sends it to Spawn). A JSON body never starts with @.
+case "$BODY" in @*) die "the body must be JSON text; a leading @ would make curl send a local file" ;; esac
+case "$METHOD" in GET | POST | PATCH | PUT | DELETE) ;; *) die "unsupported method: $METHOD" ;; esac
+case "$TARGET" in
+  /*) URL="$ORIGIN$TARGET" ;;
+  "$ORIGIN"/*) URL="$TARGET" ;;
+  *) die "refusing to send a token anywhere but $ORIGIN" ;;
+esac
+args=(-X "$METHOD")
+if [ -n "$BODY" ]; then
+  args+=(-H 'content-type: application/json' --data-binary "$BODY")
+fi
+spawn_curl "${args[@]}" "$URL"
+echo

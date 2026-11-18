@@ -1,0 +1,43 @@
+# name<TAB>color<TAB>description   (applied by scripts/setup-github.sh; see docs/community/triage-and-labels.md)
+bug	d73a4a	Something is not working
+enhancement	a2eeef	A new feature or an improvement
+documentation	0075ca	Improvements or additions to documentation
+question	d876e3	A question; usually better asked in Discussions
+task	0052cc	A discrete unit of work
+security	b60205	Security-relevant; never put exploit details in a public issue
+compliance	0e8a16	Spawn terms, licensing, attribution or acceptable-use matter
+agent-behavior	5319e7	An AI agent acted wrongly, unsafely or against policy
+breaking-change	b60205	Changes behavior that people may rely on
+priority:p0	B60205	Highest priority work item
+priority:p1	B60205	High priority work item
+priority:p2	FBCA04	Medium priority work item
+priority:p3	1D76DB	Lower priority work item
+triage	ededed	Needs a maintainer to look at it
+needs-info	d876e3	Waiting for more information from the reporter
+needs-reproduction	fef2c0	Needs steps or input that reproduce the problem
+blocked	b60205	Cannot proceed until something else is resolved
+blocks	ee0701	Other work is waiting on this
+duplicate	cfd3d7	This already exists
+invalid	e4e669	This does not seem right
+wontfix	ffffff	This will not be worked on
+good first issue	7057ff	Good for newcomers
+help wanted	008672	Extra attention is welcome
+mentor-available	7057ff	A maintainer will guide a first-time contributor through this
+discussion	d876e3	Needs design discussion; open-ended topics belong in Discussions
+area:runtime	c5def5	Listener, handler, routing, cursor, locks (bin/, lib/)
+area:worlds	c5def5	World registry, clones, renames
+area:slack	c5def5	Slack bridge and manifest
+area:providers	c5def5	Agent command and provider integrations
+area:install	c5def5	Install script, systemd, onboarding
+area:templates	c5def5	Prompt, runtime guide and example files
+area:docs	c5def5	Documentation
+area:ci	c5def5	Workflows, linting and tests infrastructure
+area:tests	c5def5	Tests and test tooling
+upstream:spawn	fbca04	Depends on, or is caused by, something on the Spawn platform
+ai-assisted	bfd4f2	The pull request or issue discloses AI assistance
+agent-authored	bfd4f2	Opened by one of the project agent accounts
+needs-human-explanation	d93f0b	The author is asked to explain the change in their own words
+hard-to-review	ededed	Hard to review as sent: please make it smaller or explain it
+ai-disclosure-missing	fbca04	AI involvement is evident but not disclosed
+dependencies	0366d6	Dependency updates
+skip-changelog	ededed	Leave out of generated release notes

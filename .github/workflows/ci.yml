@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to a pull request replaces its older run. Every push to main gets a group of its own
+  # (its commit), so no run for main is cancelled and every commit there keeps a real result.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Lint and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The Bun version is pinned so a new Bun release cannot change what the lockfile check does.
+      # Dependabot does not update this value: raise it by hand, and run `bun install` to refresh bun.lock.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      - name: Check the lockfile is in sync
+        run: bun install --frozen-lockfile
+      - name: Install linters
+        run: |
+          python3 -m venv "$RUNNER_TEMP/lint"
+          "$RUNNER_TEMP/lint/bin/pip" install --quiet yamllint==1.38.0 actionlint-py==1.7.12.25 shellcheck-py==0.11.0.1
+          echo "$RUNNER_TEMP/lint/bin" >> "$GITHUB_PATH"
+      - name: Lint and test
+        run: bash scripts/lint.sh

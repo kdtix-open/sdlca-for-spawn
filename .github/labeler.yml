@@ -1,0 +1,37 @@
+# Labels applied to pull requests by .github/workflows/labeler.yml, based on the files they change.
+area:runtime:
+  - changed-files:
+      - any-glob-to-any-file: ['bin/**', 'lib/**']
+area:worlds:
+  - changed-files:
+      - any-glob-to-any-file: ['bin/sdlca-worlds', 'tests/test_worlds.py']
+area:slack:
+  - changed-files:
+      - any-glob-to-any-file: ['slack/**', 'docs/slack-bridge.md']
+area:providers:
+  - changed-files:
+      - any-glob-to-any-file: ['templates/account.env.example', 'docs/configuration.md']
+area:install:
+  - changed-files:
+      - any-glob-to-any-file: ['scripts/install.sh', 'systemd/**', 'bin/sdlca-onboard', 'docs/getting-started.md', 'docs/operations.md']
+area:templates:
+  - changed-files:
+      - any-glob-to-any-file: ['templates/**']
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', '*.md']
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**', 'scripts/lint.sh', '.shellcheckrc', '.yamllint.yml']
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file: ['tests/**']
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['package.json', 'bun.lock']
+compliance:
+  - changed-files:
+      - any-glob-to-any-file: ['LICENSE', 'NOTICE', 'docs/compliance/**']
+security:
+  - changed-files:
+      - any-glob-to-any-file: ['SECURITY.md', 'docs/security-model.md']

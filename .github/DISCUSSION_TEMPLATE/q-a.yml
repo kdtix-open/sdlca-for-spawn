@@ -1,0 +1,17 @@
+title: "[Question]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No question is too small. We try to answer in plain words, and we will point you to the right doc.
+        Please do not paste tokens, personal data, or any other session, join or login credential, including values printed by `spawn client join`. For problems in Spawn itself, see [Spawn's support page](https://www.spawn.co/support). Feedback you send to Spawn may become Spawn's under its terms.
+  - type: textarea
+    id: question
+    attributes:
+      label: What would you like to know?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried or read so far?

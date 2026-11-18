@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Create (or re-link) one agent account for one owner and make it durable: a token file of its own,
+# an env file, local clones of its worlds, and a place for its chat listener.
+#
+# usage: sdlca-onboard --owner <spawn-username> --invite <sbk_...> --username <agent-username>
+#                      [--display-name <name>] [--token-file <path>]
+#
+# --owner     the Spawn user the agent works for; also the account's folder name
+# --invite    the one-time code from that person's prompt (single use, expires in 10 minutes)
+# --username  the agent's own Spawn handle (lowercase letters, digits, underscore)
+#
+# Your global git configuration is left exactly as it was: `spawn login` adds a credential helper
+# there, and this script removes it again. Clones get their own helper (see sdlca-worlds).
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+OWNER="" INVITE="" USERNAME="" DISPLAY_NAME="" TOKEN_FILE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --owner) OWNER="${2:-}"; shift 2 ;;
+    --invite) INVITE="${2:-}"; shift 2 ;;
+    --username) USERNAME="${2:-}"; shift 2 ;;
+    --display-name) DISPLAY_NAME="${2:-}"; shift 2 ;;
+    --token-file) TOKEN_FILE="${2:-}"; shift 2 ;;
+    -h | --help) usage_header "$0"; exit 0 ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+[ -n "$OWNER" ] && [ -n "$INVITE" ] && [ -n "$USERNAME" ] || die "need --owner, --invite and --username (try --help)"
+[[ "$OWNER" =~ ^[a-z0-9_]+$ ]] || die "--owner must be lowercase letters, digits and underscore"
+[[ "$USERNAME" =~ ^[a-z0-9_]+$ ]] || die "--username must be lowercase letters, digits and underscore"
+[[ "$INVITE" =~ ^sbk_[0-9a-f]+$ ]] || die "--invite does not look like an invite code (sbk_...)"
+DISPLAY_NAME="${DISPLAY_NAME:-$USERNAME}"
+for tool in spawn git python3 curl; do
+  command -v "$tool" > /dev/null 2>&1 || die "$tool is not installed (see docs/getting-started.md)"
+done
+
+ACC="$SDLCA_SPAWN_HOME/accounts/$OWNER"
+TOKEN_FILE="${TOKEN_FILE:-$ACC/token}"
+mkdir -p "$ACC" "$SDLCA_SPAWN_HOME/run"
+chmod 700 "$SDLCA_SPAWN_HOME" "$SDLCA_SPAWN_HOME/accounts" "$ACC" "$SDLCA_SPAWN_HOME/run"
+HELPER_KEY="credential.https://git.spawn.co.helper"
+
+# Remember what the global git configuration said, so we can put it back (even if login fails).
+PRIOR=()
+while IFS= read -r line; do PRIOR+=("$line"); done < <(git config --global --get-all "$HELPER_KEY" || true)
+restore_git_helper() {
+  git config --global --unset-all "$HELPER_KEY" 2> /dev/null || true
+  for line in ${PRIOR[@]+"${PRIOR[@]}"}; do git config --global --add "$HELPER_KEY" "$line"; done
+}
+trap restore_git_helper EXIT
+
+# If a token already exists at this path, spawn login re-links that account instead of creating a new one.
+if [ -e "$TOKEN_FILE" ]; then
+  echo "note: $TOKEN_FILE exists; spawn login will re-link that account, not create a new one"
+fi
+if ! LOGIN="$(cd "$HOME" && SPAWN_TOKEN_FILE="$TOKEN_FILE" spawn login --invite "$INVITE" --username "$USERNAME" 2>&1)"; then
+  printf '%s\n' "$LOGIN" >&2
+  die "spawn login failed (an invite works once and expires after 10 minutes; ask for a fresh prompt)"
+fi
+printf '%s\n' "$LOGIN" | grep -E '^[[:space:]]*"(username|handle|created|role|address)"' || true
+[ -s "$TOKEN_FILE" ] || die "spawn login did not write a token file at $TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+
+if [ ! -e "$ACC/env" ]; then
+  {
+    printf '# Account env for %s (sourced by the kit: keep it mode 0600)\n' "$OWNER"
+    printf 'OWNER=%q\nSPAWN_USERNAME=%q\nSPAWN_TOKEN_FILE=%q\n\n' "$OWNER" "$USERNAME" "$TOKEN_FILE"
+    sed -n '/^# REQUIRED/,$p' "$SDLCA_CODE_DIR/templates/account.env.example"
+  } > "$ACC/env"
+  chmod 600 "$ACC/env"
+  echo "wrote $ACC/env"
+fi
+
+BODY="$(python3 -I -B -c 'import json, sys; print(json.dumps({"name": sys.argv[1]}))' "$DISPLAY_NAME")"
+SPAWN_TOKEN_FILE="$TOKEN_FILE" "$SDLCA_CODE_DIR/bin/sdlca-api" PATCH /api/agent/v1/me "$BODY" > /dev/null || echo "warning: could not set the display name"
+SPAWN_TOKEN_FILE="$TOKEN_FILE" SPAWN_USERNAME="$USERNAME" ACCOUNT="$OWNER" python3 -I -B "$SDLCA_CODE_DIR/bin/sdlca-worlds" --apply
+
+printf '\nAccount %s is ready. Next:\n' "$OWNER"
+printf '  1. Choose how the agent runs: edit %s/env and set SDLCA_AGENT_CMD (read docs/security-model.md first).\n' "$ACC"
+printf '  2. Start its listener:  systemctl --user enable --now sdlca-listener@%s.service\n' "$OWNER"
+printf '     (install the unit once with scripts/install.sh)\n'

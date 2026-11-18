@@ -1,0 +1,23 @@
+title: "[Idea]: "
+labels: ["discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Early and half-formed ideas are welcome here. Nobody needs a finished proposal to start a conversation.
+        Please do not paste tokens, personal data, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What is your idea?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Who would it help, and what problem does it solve?
+  - type: textarea
+    id: unsure
+    attributes:
+      label: What are you unsure about?
+      description: Questions you would like the community to weigh in on.

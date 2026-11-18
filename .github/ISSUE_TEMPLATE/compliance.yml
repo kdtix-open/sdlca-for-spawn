@@ -1,0 +1,52 @@
+name: Compliance or attribution concern
+description: Something may conflict with Spawn's terms, a license, a trademark, or credit that is due.
+title: "[Compliance]: "
+labels: ["compliance", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We want to get this right, and we are glad when someone tells us we have not. Thank you.
+
+        If you speak for Spawn or another rights holder and prefer not to use a public issue, or if this is a privacy or personal-data concern, please email Open.Source@kdtix.com instead (see [SUPPORT.md](https://github.com/kdtix-open/sdlca-for-spawn/blob/main/SUPPORT.md)).
+        Please do not paste tokens, invite codes, personal data, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: textarea
+    id: concern
+    attributes:
+      label: What is the concern?
+      description: Which file, page or behavior, and which rule, license or term you think it conflicts with.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Link to the rule, license or term
+      description: For example a URL to Spawn's terms, a license text, or a brand guideline.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of concern is it?
+      options:
+        - Spawn terms or acceptable use
+        - Name, brand or trademark
+        - License or copyright
+        - Missing credit or attribution
+        - Privacy or personal data
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would put it right?
+  - type: dropdown
+    id: ai-help
+    attributes:
+      label: Did an AI tool help find or write this report?
+      description: "Choose Yes if this is true: An AI tool did more than spelling, formatting, autocomplete or a mechanical rename. Either answer is fine. Please tell us, and confirm you checked it yourself."
+      options:
+        - "No"
+        - Yes, and I verified it and rewrote it in my own words
+        - Yes, but I have not verified it
+    validations:
+      required: true

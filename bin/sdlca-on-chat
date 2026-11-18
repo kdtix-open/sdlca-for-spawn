@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Handle one Spawn inbox event for one account. Called by sdlca-listen through `spawn events --exec`,
+# with the event JSON in $SPAWN_EVENT (or on stdin).
+#
+#   chat_mention     from the owner (or a sender you allow) -> run one agent turn in the right world
+#                    from anyone else -> ignored silently (no reply, so nobody can probe the agent)
+#   friend_request   accept it only if it comes from the owner
+#   savi_*           logged
+#   anything else    ignored
+#
+# A turn that fails or times out is kept in run/failed/<event-id>.json so you can replay it by hand.
+# usage: sdlca-on-chat <account>
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -eq 1 ] || die "usage: sdlca-on-chat <account>"
+load_account "$1"
+EVENT="${SPAWN_EVENT:-$(cat)}"
+export -n EVENT # never exported, even if the caller's environment had an EVENT: the agent must not inherit other people's chat text
+# The Spawn client hands the handler the raw token in SPAWN_TOKEN. The agent never needs it (it uses
+# sdlca-api, which reads the token file), so it is removed before anything else runs.
+unset SPAWN_TOKEN SPAWN_EVENT
+
+KIND="" CURSOR="" EVENT_ID="" DECISION="" SENDER="" ADDR="" CWD="" LOCK=""
+IFS=$'\t' read -r KIND CURSOR EVENT_ID DECISION SENDER ADDR CWD LOCK \
+  < <(printf '%s' "$EVENT" | python3 -I -B "$SDLCA_CODE_DIR/lib/route.py" 2> /dev/null) || true
+if [ -z "$KIND" ]; then
+  log_line "ERROR event could not be parsed; skipped"
+  exit 0
+fi
+
+case "$KIND" in
+  friend_request)
+    "$SDLCA_CODE_DIR/bin/sdlca-friends" "$ACCOUNT" >> "$ACC/handler.log" 2>&1 || log_line "WARN friend accept failed"
+    cursor_advance "$CURSOR"
+    exit 0
+    ;;
+  savi_finished | savi_needs_you)
+    log_line "SAVI-EVENT kind=$KIND"
+    cursor_advance "$CURSOR"
+    exit 0
+    ;;
+  chat_mention) ;;
+  *)
+    cursor_advance "$CURSOR"
+    exit 0
+    ;;
+esac
+
+if [ "$DECISION" != "allow" ]; then
+  log_line "DENIED sender=$SENDER reason=${DECISION#deny:}"
+  cursor_advance "$CURSOR"
+  exit 0
+fi
+if [ -z "${SDLCA_AGENT_CMD:-}" ]; then
+  log_line "ERROR SDLCA_AGENT_CMD is not set; event left unhandled"
+  exit 1
+fi
+
+RUN="$SDLCA_SPAWN_HOME/run"
+mkdir -p "$RUN/failed" "$RUN/scratch/$ACCOUNT"
+HANDLED="$ACC/handled.ids"
+# Kept events hold raw chat text: forget the old ones (SDLCA_FAILED_KEEP_DAYS, default 30; 0 keeps them forever).
+if [ "${SDLCA_FAILED_KEEP_DAYS:-30}" -gt 0 ] 2> /dev/null; then
+  find "$RUN/failed" -maxdepth 1 -type f -name '*.json' -mtime +"${SDLCA_FAILED_KEEP_DAYS:-30}" -delete 2> /dev/null || true
+fi
+
+# An event that was already handled (the listener replays the last one after a crash) is not run twice.
+# handled_before <id>: 0 = yes. A file that cannot be read counts as "no" (and says so): a duplicate turn is better than a lost one.
+handled_before() {
+  local rc=0
+  python3 -I -B "$SDLCA_CODE_DIR/lib/dedupe.py" seen "$HANDLED" "$1" || rc=$?
+  [ "$rc" -le 1 ] || log_line "WARN handled.ids could not be read (status $rc); treating the event as new"
+  [ "$rc" -eq 0 ]
+}
+
+if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then
+  log_line "SKIP event $EVENT_ID was already handled"
+  cursor_advance "$CURSOR"
+  exit 0
+fi
+
+# Keep a failed or refused event so it can be replayed by hand:  SPAWN_EVENT="$(cat run/failed/<id>.json)" sdlca-on-chat <account>
+keep_event() {
+  local name="${EVENT_ID}"
+  [ "$name" != "-" ] || name="event-$(date -u +%s)"
+  printf '%s' "$EVENT" > "$RUN/failed/$name.json"
+}
+
+# A cap on how many agent turns an account may start in an hour (every turn can cost money).
+rate=0
+python3 -I -B "$SDLCA_CODE_DIR/lib/ratelimit.py" "$ACC/runs.log" "${SDLCA_MAX_RUNS_PER_HOUR:-20}" 3600 || rate=$?
+case "$rate" in
+  0) ;;
+  1)
+    log_line "RATE-LIMITED more than ${SDLCA_MAX_RUNS_PER_HOUR:-20} agent runs in an hour; event kept in run/failed"
+    keep_event
+    cursor_advance "$CURSOR"
+    exit 0
+    ;;
+  *)
+    log_line "ERROR the run cap could not be checked (status $rate; is SDLCA_MAX_RUNS_PER_HOUR a number? is runs.log writable?); event left unhandled"
+    exit 1
+    ;;
+esac
+
+log_line "event sender=$SENDER world=$ADDR"
+PROMPT="$(printf '%s' "$EVENT" | python3 -I -B "$SDLCA_CODE_DIR/lib/render_prompt.py")" || {
+  log_line "ERROR the prompt could not be rendered; event left unhandled"
+  exit 1
+}
+
+# One writer per world: turns for the same world queue on a lock (for at most SDLCA_LOCK_WAIT seconds).
+# A timeout stops a hung agent from holding the lock forever, and the agent does not inherit the lock's
+# file descriptor (9>&-), so a process it leaves running in the background cannot keep the lock.
+status=0
+(
+  flock -w "${SDLCA_LOCK_WAIT:-3600}" 9 || exit 75
+  # The same event can arrive twice at once (two listeners, a client retry). The copy that waited for the lock
+  # looks again, so only one of them runs the agent.
+  if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then exit 76; fi
+  if [ -n "${SDLCA_CREDENTIALS_FILE:-}" ]; then
+    # Provider keys live in one file you already keep; the agent gets them without a second copy.
+    [ -r "$SDLCA_CREDENTIALS_FILE" ] || { log_line "ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed"; exit 74; }
+    set -a
+    # shellcheck disable=SC1090
+    . "$SDLCA_CREDENTIALS_FILE"
+    set +a
+  fi
+  # Never run the agent in the runtime home: it holds every account's token.
+  cd "$CWD" 2> /dev/null || cd "$RUN/scratch/$ACCOUNT"
+  agent_rc=0
+  printf '%s\n' "$PROMPT" |
+    timeout -k 10 "${SDLCA_AGENT_TIMEOUT:-1800}" bash -c "$SDLCA_AGENT_CMD" 9>&- >> "$ACC/handler.log" 2>&1 || agent_rc=$?
+  if [ "$agent_rc" -ne 0 ]; then # (set -e does not apply here: this subshell runs inside an || list)
+    case "$agent_rc" in 74 | 75 | 76) agent_rc=1 ;; esac # these three are this script's own codes (see the case below)
+    exit "$agent_rc"
+  fi
+  # Record the event while the lock is still held, so a copy waiting for the lock sees it.
+  [ "$EVENT_ID" = "-" ] || python3 -I -B "$SDLCA_CODE_DIR/lib/dedupe.py" add "$HANDLED" "$EVENT_ID" ||
+    log_line "WARN could not record event $EVENT_ID as handled"
+  exit 0
+) 9>> "$RUN/$LOCK.lock" || status=$? # append: never truncate what a link at that path points to
+
+case "$status" in
+  0) ;;
+  76)
+    log_line "SKIP event $EVENT_ID was already handled (another copy finished first)"
+    ;;
+  75)
+    log_line "WARN the world was busy for too long; event kept in run/failed"
+    keep_event
+    ;;
+  74)
+    keep_event # the subshell already said why
+    ;;
+  *)
+    log_line "WARN agent exited with status $status; event kept in run/failed"
+    keep_event
+    ;;
+esac
+cursor_advance "$CURSOR"

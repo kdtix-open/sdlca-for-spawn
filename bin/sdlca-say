@@ -1,0 +1,120 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: Apache-2.0
+"""Post a reply into Spawn chat as ordered lines of at most 200 characters (Spawn's limit).
+
+usage:
+  sdlca-say room <world> <room> <ref> <replyTo|->   < text
+  sdlca-say dm   <to> <replyTo|->                   < text
+
+The reply text comes from stdin. Long text is split on word boundaries and numbered (1/3), (2/3).
+Spawn allows about five chat lines in ten seconds, so lines go out 2.2 seconds apart, and at most
+SDLCA_SAY_MAX_LINES (default 8) are sent; a longer reply ends with a note saying how much was left out.
+Rate limits (HTTP 429) and server errors (5xx) are retried, honoring Retry-After or retry_after_ms.
+Uses SPAWN_TOKEN_FILE and SPAWN_ORIGIN (default https://www.spawn.co); redirects are never followed.
+"""
+import json
+import math
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import safeurl  # noqa: E402
+from linesplit import chunk  # noqa: E402
+
+PAUSE_SECONDS = float(os.environ.get("SDLCA_SAY_PAUSE", "2.2"))  # seconds between lines; Spawn rate-limits chat
+MAX_LINES = max(2, int(os.environ.get("SDLCA_SAY_MAX_LINES", "8")))  # room for one line and the "more lines" note
+ATTEMPTS = 6
+
+
+def retry_after(error):
+    """Seconds to wait: the Retry-After header (seconds), else retry_after_ms in the JSON body, else 3.
+    A value that is not a plain non-negative number (NaN, negative, infinite) counts as missing."""
+
+    def usable(value):
+        return value is not None and math.isfinite(value) and value >= 0
+
+    header = error.headers.get("Retry-After") if error.headers else None
+    if header:
+        try:
+            seconds = float(header)
+        except ValueError:
+            seconds = None  # an HTTP date: fall through
+        if usable(seconds):
+            return seconds
+    try:
+        seconds = float(json.loads(error.read() or b"{}").get("retry_after_ms")) / 1000.0
+    except (ValueError, TypeError, AttributeError):
+        return 3.0
+    return seconds if usable(seconds) else 3.0
+
+
+def post(opener, url, token, body):
+    for attempt in range(ATTEMPTS):
+        request = urllib.request.Request(
+            url,
+            json.dumps(body).encode(),
+            {"Authorization": "Bearer " + token, "content-type": "application/json"},
+        )
+        try:
+            with opener.open(request, timeout=30) as response:
+                data = json.load(response)
+        except urllib.error.HTTPError as error:
+            if (error.code == 429 or 500 <= error.code < 600) and attempt < ATTEMPTS - 1:
+                time.sleep(min(retry_after(error) + 1, 30) if error.code == 429 else min(2 ** attempt, 15))
+                continue
+            note = " (rate limited; gave up after %d tries)" % ATTEMPTS if error.code == 429 else ""
+            raise SystemExit("sdlca-say: HTTP %d%s" % (error.code, note))
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            raise SystemExit("sdlca-say: %s" % error)
+        if not data.get("ok"):
+            raise SystemExit("sdlca-say: Spawn answered ok=false")
+        return data
+    raise SystemExit("sdlca-say: gave up")
+
+
+def main(argv):
+    args = argv[1:]
+    mode = args[0] if args else ""
+    if mode == "room" and len(args) == 5:
+        world, room, ref, reply_to = args[1:]
+        url_path = "/api/agent/v1/chat/room"
+    elif mode == "dm" and len(args) == 3:
+        to, reply_to = args[1:]
+        url_path = "/api/agent/v1/chat/dm"
+    else:
+        sys.exit(__doc__)
+    if reply_to != "-" and not (reply_to.isascii() and reply_to.isdigit()):
+        sys.exit("sdlca-say: replyTo must be a line number or -")
+    lines = chunk(sys.stdin.read())
+    if not lines:
+        sys.exit("sdlca-say: nothing to say (empty input)")
+    if len(lines) > MAX_LINES:
+        left_out = len(lines) - (MAX_LINES - 1)
+        lines = lines[: MAX_LINES - 1] + ["(%d more lines were not sent; ask me to continue, or read the file I point to)" % left_out]
+    token_file = os.environ.get("SPAWN_TOKEN_FILE")
+    if not token_file:
+        sys.exit("sdlca-say: SPAWN_TOKEN_FILE is not set; run under sdlca-as <account>")
+    token = safeurl.read_token(token_file)
+    origin = safeurl.check_origin(os.environ.get("SPAWN_ORIGIN", "https://www.spawn.co"))
+    opener = safeurl.opener()
+    run_id = uuid.uuid4().hex[:12]  # one id per call: a retry of the same line keeps its nonce, a new reply gets new ones
+    for index, line in enumerate(lines):
+        nonce = "%s-%d" % (run_id, index)
+        if mode == "room":
+            body = {"world": world, "room": room, "ref": ref, "text": line, "nonce": nonce}
+        else:
+            body = {"to": to, "text": line, "nonce": nonce}
+        if reply_to != "-" and index == 0:
+            body["replyTo"] = int(reply_to)
+        post(opener, origin + url_path, token, body)
+        print("sent %d/%d" % (index + 1, len(lines)))
+        if index < len(lines) - 1:
+            time.sleep(PAUSE_SECONDS)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in this kit does not work as documented.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report this. A clear report is a gift to the next person who hits the same problem.
+
+        **Please do not paste tokens, invite codes, Slack tokens or other secrets, or any other session, join or login credential, including values printed by `spawn client join`.** Replace them with `REDACTED`. Please leave out other people's messages and names too.
+        If the problem is in Spawn itself (a world, a player, Spawn's website), please use [Spawn's own channels](https://www.spawn.co/support) instead, and do not post details of a way to break Spawn in a public issue. Feedback you send to Spawn may become Spawn's under its terms.
+        This project is an unofficial community kit and is not affiliated with Spawn.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect to see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps or input that shows the problem. A failing command is ideal.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kit version or commit
+      description: Output of `git rev-parse --short HEAD` in your clone, or the release tag.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: "Run `bash --version | head -1; python3 --version; git --version; bun --version; bun pm ls -g | tail -n +2` and paste what it prints, with your operating system. (The first line of `bun pm ls -g` shows your home folder, so the command skips it.) Paste whatever you can; blanks are fine."
+      render: text
+  - type: input
+    id: agent-command
+    attributes:
+      label: Agent command
+      description: The tool in `SDLCA_AGENT_CMD`, without any keys (for example `claude -p`, `codex exec`). Leave blank if not relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `handler.log` or `listener.log` in your runtime home. Paste only the few lines that matter. `handler.log` can hold anything the agent printed, so also remove tokens, other people's messages, file contents, home-folder paths, usernames and world names you do not want public.
+      render: shell
+  - type: dropdown
+    id: ai-help
+    attributes:
+      label: Did an AI tool help find or write this report?
+      description: "Choose Yes if this is true: An AI tool did more than spelling, formatting, autocomplete or a mechanical rename. Either answer is fine. Please tell us, and confirm you checked it yourself."
+      options:
+        - "No"
+        - Yes, and I verified it and rewrote it in my own words
+        - Yes, but I have not verified it
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues and Discussions.
+          required: true
+        - label: I removed tokens, invite codes, other credentials and personal data.
+          required: true
+        - label: I have read the [Code of Conduct](https://github.com/kdtix-open/sdlca-for-spawn/blob/main/CODE_OF_CONDUCT.md).
+          required: true

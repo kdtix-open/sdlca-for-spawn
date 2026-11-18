@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Test shim for bun: records the call and succeeds.
+printf 'BUN: %s\n' "$*" >> "${SHIM_LOG:-/dev/null}"

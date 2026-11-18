@@ -1,0 +1,65 @@
+name: Agent behavior problem
+description: An AI agent run by this kit did something wrong, unsafe or against the rules.
+title: "[Agent]: "
+labels: ["agent-behavior", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for telling us. Findings like this make the kit safer for everyone.
+
+        **If you think this is a security vulnerability** (for example a way to make the kit run commands for someone who is not allowed to), please use [private reporting](https://github.com/kdtix-open/sdlca-for-spawn/security/advisories/new) instead of this form.
+        Please do not paste tokens, invite codes, other people's messages, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What did the agent do?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should it have done instead?
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Agent command and permission mode
+      description: For example `claude -p --permission-mode acceptEdits` (no keys, please).
+    validations:
+      required: true
+  - type: textarea
+    id: trigger
+    attributes:
+      label: What message or event triggered it?
+      description: A redacted copy of the message. Say who sent it (owner or an allowed sender) without naming people who did not agree to be named.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Paste only the few lines that matter. `handler.log` can hold anything the agent printed, so also remove file contents, home-folder paths, usernames and world names you do not want public.
+      render: shell
+  - type: dropdown
+    id: impact
+    attributes:
+      label: What was affected?
+      options:
+        - Nothing, it was caught in time
+        - Files in a world clone
+        - A live world (a push reached players)
+        - Something outside the kit
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-help
+    attributes:
+      label: Did an AI tool help find or write this report?
+      description: "Choose Yes if this is true: An AI tool did more than spelling, formatting, autocomplete or a mechanical rename. Either answer is fine. Please tell us, and confirm you checked it yourself."
+      options:
+        - "No"
+        - Yes, and I verified it and rewrote it in my own words
+        - Yes, but I have not verified it
+    validations:
+      required: true

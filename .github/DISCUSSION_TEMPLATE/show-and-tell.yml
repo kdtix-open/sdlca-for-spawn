@@ -1,0 +1,17 @@
+title: "[Show and tell]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us what you built or learned with the kit, and what you would do differently. Please share only what you have the right to share:
+        no content from other people's Spawn worlds, and no tokens, personal data, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: textarea
+    id: story
+    attributes:
+      label: What did you do?
+    validations:
+      required: true
+  - type: textarea
+    id: lessons
+    attributes:
+      label: What worked, and what was hard?

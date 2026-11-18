@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Test shim for curl: records the command line and any stdin config, and answers from canned JSON.
+# SHIM_LOG        file to append "ARGV: ..." / "STDIN: ..." / "BODY: ..." lines to
+# SHIM_FRIENDS    JSON returned for GET .../api/social/friends
+set -u
+{
+  printf 'ARGV: %s\n' "$*"
+  for a in "$@"; do :; done
+} >> "${SHIM_LOG:-/dev/null}"
+# curl -K - reads its config from stdin
+if printf '%s ' "$@" | grep -q -- '-K -'; then
+  printf 'STDIN: %s\n' "$(cat)" >> "${SHIM_LOG:-/dev/null}"
+fi
+ME_DEFAULT='{"username":"alice","handle":"@@alice","actorClass":"human","linkedTo":null,"worlds":[{},{}]}'
+url="${*: -1}"
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--data-binary" ] && printf 'BODY: %s\n' "$a" >> "${SHIM_LOG:-/dev/null}"
+  prev="$a"
+done
+case "$url" in
+  */api/social/friends) printf '%s' "${SHIM_FRIENDS:-{\"incoming\":[]\}}" ;;
+  */api/social/relation) printf '{"ok":true,"friend":"friends"}' ;;
+  */api/agent/v1/me) printf '%s' "${SHIM_ME:-$ME_DEFAULT}" ;;
+  *) printf '{"ok":true}' ;;
+esac

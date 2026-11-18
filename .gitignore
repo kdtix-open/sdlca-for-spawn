@@ -1,0 +1,47 @@
+# Secrets and runtime state. These belong in your runtime home (~/.sdlca/spawn), never in this repo.
+# They are listed here in case someone points SDLCA_SPAWN_HOME at a checkout, or keeps a provider-key file
+# (SDLCA_CREDENTIALS_FILE) next to a clone.
+/accounts/
+/run/
+/shots/
+/worlds.json
+/allowlist.json
+/slack/*.env
+handled.ids
+runs.log
+token
+*.token
+.env
+.env.*
+*.env
+!*.env.example
+.netrc
+.npmrc
+credentials*.json
+id_rsa*
+id_ed25519*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local tool settings and indexes
+.claude/settings.local.json
+.codegraph/
+
+# A local-only working folder that is never part of the project
+/design/
+
+# Logs and caches
+*.log
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors and operating systems
+.DS_Store
+*:Zone.Identifier
+*.swp
+.idea/
+.vscode/

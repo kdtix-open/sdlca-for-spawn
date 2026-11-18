@@ -1,0 +1,44 @@
+name: Monthly compliance check
+
+# Spawn changes its terms and rules often (its Terms of Service changed several times in 2026), so once a month
+# this opens an issue asking a maintainer to re-read them and record the date. See docs/compliance/spawn-rules.md.
+on:
+  schedule:
+    - cron: "17 14 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  remind:
+    name: Open the monthly issue
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Open the issue unless one is already open
+        run: |
+          month="$(date -u +%Y-%m)"
+          title="Monthly check: re-verify Spawn's terms and rules ($month)"
+          if [ -n "$(gh issue list --state open --label compliance --search "in:title Monthly check" --json number --jq '.[].number')" ]; then
+            echo "A monthly check issue is already open."
+            exit 0
+          fi
+          body="$(cat << 'BODY'
+          A short, regular check that keeps this project inside Spawn's rules. It usually takes 20 minutes.
+
+          - [ ] Re-read the [Terms of Service](https://www.spawn.co/terms-of-service) and note the "last revised" date.
+          - [ ] Re-read [what Spawn is for](https://www.spawn.co/about/what-spawn-is-for) and the [FAQ](https://www.spawn.co/about/faq).
+          - [ ] Skim [llms.txt](https://www.spawn.co/llms.txt) and [openapi.json](https://www.spawn.co/openapi.json) for changes to agent rules, limits or endpoints.
+          - [ ] Check the [Spawn client on npm](https://www.npmjs.com/package/@spawnco/client): version and license.
+          - [ ] Update docs/compliance/spawn-rules.md with what changed and the date you checked, even if nothing changed.
+          - [ ] Open issues for anything in the kit or the docs that no longer matches.
+
+          Close this issue when done. Please do not paste secrets or personal data.
+          BODY
+          )"
+          gh issue create --title "$title" --label compliance --body "$body"

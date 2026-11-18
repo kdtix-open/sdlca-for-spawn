@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# One long-running listener per Spawn account: the inbox stream belongs to the account's token.
+# It watches chat mentions, friend requests and Savi events, and runs sdlca-on-chat once per event.
+# The client prints status lines on stderr (kept in listener.log) and each event as JSON on stdout; that JSON
+# holds other people's chat text, so it is discarded rather than logged.
+# usage: sdlca-listen <account>        (normally started by systemd; see systemd/)
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -eq 1 ] || die "usage: sdlca-listen <account>"
+load_account "$1"
+if [ -z "${SDLCA_AGENT_CMD:-}" ]; then
+  # 78 = configuration error; the systemd unit does not restart on it.
+  printf '%s: SDLCA_AGENT_CMD is not set in %s/env, so no agent would run. Choose one: see templates/account.env.example\n' "${0##*/}" "$ACC" >&2
+  exit 78
+fi
+command -v spawn >/dev/null 2>&1 || die "the spawn client is not installed (bun add -g @spawnco/client)"
+SINCE=()
+if [ -s "$ACC/cursor" ]; then
+  SINCE=(--since "$(cat "$ACC/cursor")")
+fi
+# Catch up on a friend request that arrived while the listener was down.
+"$SDLCA_CODE_DIR/bin/sdlca-friends" "$ACCOUNT" >> "$ACC/listener.log" 2>&1 || true
+# The client runs --exec through `sh -c`, so quote for sh: every ' inside a word becomes '\''.
+sh_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+HANDLER="$(sh_quote "$SDLCA_CODE_DIR/bin/sdlca-on-chat") $(sh_quote "$ACCOUNT")"
+exec spawn events --kind chat_mention,friend_request,savi_finished,savi_needs_you \
+  ${SINCE[@]+"${SINCE[@]}"} \
+  --exec "$HANDLER" > /dev/null 2>> "$ACC/listener.log"

@@ -1,0 +1,8 @@
+{
+  "_doc": "Who may trigger work. An account's owner always may. Anyone else is ignored unless listed (fail closed). Edit with bin/sdlca-allow.",
+  "slack": {
+    "workspace": "",
+    "members": []
+  },
+  "spawn": {}
+}

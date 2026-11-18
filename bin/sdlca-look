@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Join a world with a software-rendered eye, save one screenshot, and leave.
+# usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]
+# The camera starts facing yaw 0 (level) and does not turn toward objects yet.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+[ "$#" -ge 3 ] || die "usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]"
+load_account "$1"
+WORLD="$2"
+OUT="$3"
+WAIT="${4:-8}"
+[[ "$WAIT" =~ ^[0-9]+$ ]] || die "wait-seconds must be a whole number"
+[[ "$WORLD" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "the world must look like @owner/world (an option or anything else is refused)"
+# The screenshot is written by Playwright wherever OUT points, so it may only be a new .png in a scratch place.
+case "$OUT" in
+  /tmp/*.png | "${TMPDIR:-/tmp}"/*.png | "$SDLCA_SPAWN_HOME"/shots/*.png) ;;
+  *) die "the output must be a .png under /tmp, \$TMPDIR or $SDLCA_SPAWN_HOME/shots (got: $OUT)" ;;
+esac
+case "$OUT" in *..*) die "the output path must not contain .." ;; esac
+case "$OUT" in "$SDLCA_SPAWN_HOME"/shots/*) mkdir -p "$SDLCA_SPAWN_HOME/shots" ;; esac
+[ -d "$(dirname "$OUT")" ] || die "the folder for the screenshot does not exist: $(dirname "$OUT")"
+if [ -L "$OUT" ] || { [ -e "$OUT" ] && [ ! -f "$OUT" ]; }; then die "refusing to write to $OUT (a link or not a regular file)"; fi
+command -v spawn >/dev/null 2>&1 || die "the spawn client is not installed (bun add -g @spawnco/client)"
+command -v bun >/dev/null 2>&1 || die "bun is not installed"
+[ -d "$SDLCA_CODE_DIR/node_modules/playwright-core" ] ||
+  die "playwright-core is missing; run: (cd '$SDLCA_CODE_DIR' && bun install)"
+NAME="look$$"
+cleanup() { spawn client leave --name "$NAME" > /dev/null 2>&1 || true; }
+trap cleanup EXIT
+JOIN="$(spawn client join "$WORLD" --render cpu --name "$NAME" --ttl 300 2>&1)" || {
+  # What the client printed can hold join credentials, so it is not repeated here (it would reach logs and chat).
+  die "join failed; run 'spawn client join $WORLD --render cpu' by hand to read the client's own message"
+}
+CDP="$(printf '%s' "$JOIN" | grep -oE 'http://127\.0\.0\.1:[0-9]+' | head -n 1 || true)"
+[ -n "$CDP" ] || die "the join did not print a page address"
+bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$OUT" "$WAIT"

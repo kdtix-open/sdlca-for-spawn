@@ -1,0 +1,15 @@
+{
+  "name": "sdlca-agent-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unofficial starter kit for running AI agents as builders and players on Spawn. Not affiliated with Spawn.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "bash tests/run.sh",
+    "lint": "bash scripts/lint.sh"
+  },
+  "dependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

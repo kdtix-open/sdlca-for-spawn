@@ -1,0 +1,200 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: Apache-2.0
+"""Keep worlds.json and the local clones in step with the worlds a Spawn account can reach.
+
+usage: sdlca-worlds [--apply]
+
+Without --apply it only reports. With --apply it clones worlds you do not have yet, records every world
+in $SDLCA_SPAWN_HOME/worlds.json, and follows a rename: when a world keeps its id but changes its
+address, the clone's remote is updated, the folder is moved to its new place and the old address is
+remembered as an alias. If an agent is working in the world at that moment, the move waits for a later
+run. Worlds are keyed by their immutable worldId, never by name.
+
+Each world records which accounts can reach it (that is what routes a chat event to the right clone).
+Each clone is made under $SDLCA_REPOS/<owner>/<world> with its own git credential helper, which reads
+this account's token file and is attached to Spawn's git host only; a clone that is missing is made
+again on the next run. Your global git configuration is not touched, and an existing clone of yours is
+never modified.
+
+Environment: SPAWN_TOKEN_FILE, SPAWN_USERNAME and ACCOUNT (all set by sdlca-as), SPAWN_ORIGIN (default
+https://www.spawn.co), SDLCA_SPAWN_HOME (default ~/.sdlca/spawn), SDLCA_REPOS (default ~/repos),
+SDLCA_GIT_NAME and SDLCA_GIT_EMAIL (commit identity inside the clones).
+"""
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import gitcred  # noqa: E402
+import route  # noqa: E402
+import safeurl  # noqa: E402
+
+os.umask(0o077)  # the runtime home and registry are private; clones are made by git, which follows the same umask
+ADDRESS = re.compile(r"@{1,2}([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")  # @owner/world, or @@agent/world for a world an agent made
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+ACCOUNT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63})?$")  # one word, or group/name
+
+
+def git(*args, cwd=None, timeout=600):
+    try:
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "timed out after %d seconds" % timeout)
+
+
+def try_world_lock(home, lock_name):
+    """Take the per-world lock the handler uses, without waiting. Returns the open descriptor, or None if busy."""
+    path = home / "run" / (lock_name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def main(argv):
+    apply = "--apply" in argv
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
+    token_file = os.environ.get("SPAWN_TOKEN_FILE")
+    username = os.environ.get("SPAWN_USERNAME", "")
+    account = os.environ.get("ACCOUNT", "")
+    if not token_file or not SAFE_NAME.match(username) or not ACCOUNT_NAME.match(account):
+        sys.exit("sdlca-worlds: run under sdlca-as <account> (SPAWN_TOKEN_FILE, SPAWN_USERNAME and ACCOUNT must be set)")
+    home = Path(os.environ.get("SDLCA_SPAWN_HOME") or Path.home() / ".sdlca" / "spawn")
+    repos = Path(os.environ.get("SDLCA_REPOS") or Path.home() / "repos")
+    origin = safeurl.check_origin(os.environ.get("SPAWN_ORIGIN", "https://www.spawn.co"), allow_file=os.environ.get("SDLCA_ALLOW_FILE_ORIGIN") == "1")
+    git_name = os.environ.get("SDLCA_GIT_NAME", "sdlca-agent")
+    git_email = os.environ.get("SDLCA_GIT_EMAIL", "sdlca-agent@users.noreply.invalid")
+    registry_path = home / "worlds.json"
+    prefix = "" if apply else "[dry-run] "
+
+    if registry_path.exists():
+        try:
+            valid = isinstance(json.loads(registry_path.read_text(encoding="utf-8")), dict)
+        except (OSError, ValueError):
+            valid = False
+        if not valid:
+            sys.exit("sdlca-worlds: %s is not a valid JSON object; fix it or move it aside, then run again (nothing was changed)" % registry_path)
+
+    token = safeurl.read_token(token_file)
+    request = urllib.request.Request(origin + "/api/agent/v1/me", headers={"Authorization": "Bearer " + token})
+    try:
+        with safeurl.opener().open(request, timeout=30) as response:
+            me = json.load(response)
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        sys.exit("sdlca-worlds: could not read the account's worlds: %s" % error)
+
+    registry_lock = None
+    if apply:
+        # Two runs (or onboarding and a manual run) must not overwrite each other's registry.
+        home.mkdir(parents=True, exist_ok=True)
+        registry_lock = os.open(home / "worlds.json.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(registry_lock, fcntl.LOCK_EX)
+    registry = route.load_json(str(registry_path), {"worlds": {}})
+    worlds = registry.setdefault("worlds", {})
+    if not isinstance(worlds, dict):
+        worlds = registry["worlds"] = {}
+
+    def clone(world, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        config = []
+        for setting in gitcred.clone_config(world["git"], username, token_file):
+            config += ["--config", setting]
+        result = git("clone", *config, "--", world["git"], str(path))
+        if result.returncode != 0:
+            print("clone failed (it will be tried again next run): " + result.stderr.strip()[:200])
+            return
+        git("config", "user.name", git_name, cwd=path)
+        git("config", "user.email", git_email, cwd=path)
+        print("cloned")
+
+    def move_clone(entry, old, new, lock_name):
+        """Move a renamed world's folder, unless an agent is working in it right now."""
+        fd = try_world_lock(home, lock_name)
+        if fd is None:
+            print("WARNING an agent is working in %s; the folder will be moved on a later run" % old)
+            entry["pending_move"] = {"lock": lock_name}
+            return
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+            print("moved %s -> %s" % (old, new))
+            entry["clone_path"] = str(new)
+            entry.pop("pending_move", None)
+        finally:
+            os.close(fd)
+
+    for world in me.get("worlds", []):
+        match = ADDRESS.fullmatch(str(world.get("address", "")))
+        world_id = world.get("worldId")
+        if not match or not isinstance(world_id, str) or any(name.startswith((".", "-")) for name in match.groups()):
+            print(prefix + "skipping a world with an unexpected address or id")
+            continue
+        owner, slug = match.groups()
+        path = repos / owner / slug
+        entry = worlds.get(world_id)
+        if entry is None:
+            entry = worlds[world_id] = {
+                "appId": world.get("appId", ""),
+                "owner": owner,
+                "slug": slug,
+                "address": world["address"],
+                "clone_path": str(path),
+                "aliases": [],
+                "accounts": [],
+                "slack_channel_ids": [],
+                "standing": world.get("standing", ""),
+            }
+            print(prefix + "new world %s -> %s" % (world["address"], path))
+        else:
+            entry["standing"] = world.get("standing", entry.get("standing", ""))
+            if entry["address"] != world["address"]:
+                print(prefix + "RENAMED %s -> %s" % (entry["address"], world["address"]))
+                if apply:
+                    old_lock = route.lock_name(entry, account)  # the handler locks by the OLD owner and slug
+                    entry["aliases"] = sorted(set(entry.get("aliases", []) + [entry["address"]]))
+                    old = Path(entry["clone_path"])
+                    entry.update(owner=owner, slug=slug, address=world["address"])
+                    if old.exists():
+                        if world.get("git"):
+                            git("remote", "set-url", "origin", world["git"], cwd=old)
+                        if old == path:
+                            pass
+                        elif path.exists():
+                            print("WARNING %s already exists; left the clone at %s (remote updated)" % (path, old))
+                        else:
+                            move_clone(entry, old, path, old_lock)
+                    else:
+                        entry["clone_path"] = str(path)
+            else:
+                print(prefix + "ok %s (%s)" % (world["address"], entry["clone_path"]))
+                pending = entry.get("pending_move")
+                if apply and isinstance(pending, dict) and Path(entry["clone_path"]).exists() and not path.exists():
+                    move_clone(entry, Path(entry["clone_path"]), path, str(pending.get("lock", "")))
+        if apply:
+            entry["accounts"] = sorted(set(entry.get("accounts", [])) | {account})
+            if not Path(entry["clone_path"]).exists() and world.get("git"):
+                clone(world, Path(entry["clone_path"]))
+
+    if apply:
+        tmp = registry_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(registry_path)
+        os.close(registry_lock)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

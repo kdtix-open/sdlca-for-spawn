@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Test shim for the Spawn client: records what it was asked to do.
+#   events  behaves like the real client: a status line on stderr and one event as JSON on stdout
+#   client  `join` prints a local page address (the screenshot tool reads it); `leave` prints nothing
+#   login   behaves like the real client: writes a token file and, as the real one does, adds a credential
+#           helper to the GLOBAL git configuration. An invite starting with sbk_bad is refused.
+printf 'SPAWN: %s\n' "$*" >> "${SHIM_LOG:-/dev/null}"
+case "${1:-}" in
+  events)
+    echo "spawn events: listening (shim)" >&2
+    echo '{"kind":"chat_mention","chat":{"from":"@alice","text":"SECRET CHAT TEXT"}}'
+    ;;
+  client)
+    case "${2:-}" in
+      join)
+        if [ -n "${SHIM_JOIN_FAIL:-}" ]; then
+          echo "join refused: credential=$SHIM_JOIN_FAIL" >&2
+          exit 1
+        fi
+        echo "joined as a body; page at http://127.0.0.1:9222 (shim)"
+        ;;
+    esac
+    ;;
+  login)
+    invite="" username=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --invite) invite="$2"; shift ;; --username) username="$2"; shift ;; esac
+      shift
+    done
+    case "$invite" in
+      sbk_bad*)
+        echo "spawn login: the token door answered 401: {\"error\":\"invite_used\"}" >&2
+        exit 1
+        ;;
+    esac
+    umask 077
+    printf 'sak_fake_token_for_tests\n' > "${SPAWN_TOKEN_FILE:?}"
+    git config --global --add credential.https://git.spawn.co.helper '!f() { echo hijacked; }; f'
+    printf '{\n  "username": "%s",\n  "handle": "@@%s",\n  "created": true,\n  "token": "written to %s"\n}\n' "$username" "$username" "$SPAWN_TOKEN_FILE"
+    ;;
+esac

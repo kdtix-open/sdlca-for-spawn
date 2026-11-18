@@ -1,0 +1,43 @@
+name: Spawn changed and the kit broke
+description: Something on the Spawn platform changed (a rule, a command, an API) and the kit no longer matches.
+title: "[Spawn change]: "
+labels: ["upstream:spawn", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Spawn changes its rules and interfaces often, and we rely on being told. Thank you.
+
+        We are an unofficial community project. We cannot change Spawn, and we do not speak for it. If you found a bug in Spawn itself, please also report it through [Spawn's own channels](https://www.spawn.co/support). Feedback you send to Spawn may become Spawn's under its terms.
+        Please do not paste tokens, invite codes, other people's messages, or any other session, join or login credential, including values printed by `spawn client join`.
+  - type: textarea
+    id: change
+    attributes:
+      label: What changed?
+      description: Link to the page, release note or API description that shows it, and say when you noticed.
+    validations:
+      required: true
+  - type: textarea
+    id: breaks
+    attributes:
+      label: What stopped working in the kit?
+      description: The command, the error, or the document that is now wrong.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Spawn client version and kit version
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-help
+    attributes:
+      label: Did an AI tool help find or write this report?
+      description: "Choose Yes if this is true: An AI tool did more than spelling, formatting, autocomplete or a mechanical rename. Either answer is fine. Please tell us, and confirm you checked it yourself."
+      options:
+        - "No"
+        - Yes, and I verified it and rewrote it in my own words
+        - Yes, but I have not verified it
+    validations:
+      required: true

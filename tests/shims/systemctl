@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Test shim for systemctl: records the call and succeeds, so tests never touch the real user manager.
+printf 'SYSTEMCTL: %s\n' "$*" >> "${SHIM_LOG:-/dev/null}"
