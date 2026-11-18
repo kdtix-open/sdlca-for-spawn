@@ -16,7 +16,7 @@ have() {
 step() { printf '\n== %s\n' "$1"; }
 
 SHELL_FILES=(bin/sdlca-token bin/sdlca-as bin/sdlca-api bin/sdlca-friends bin/sdlca-listen bin/sdlca-on-chat bin/sdlca-look bin/sdlca-onboard
-  lib/common.sh scripts/*.sh tests/run.sh tests/shell/*.sh tests/shims/curl tests/shims/spawn tests/shims/bun tests/shims/systemctl)
+  lib/common.sh scripts/*.sh tests/run.sh tests/shell/*.sh tests/shims/curl tests/shims/spawn tests/shims/bun tests/shims/systemctl tests/shims/gh)
 PY_FILES=(bin/sdlca-say bin/sdlca-worlds bin/sdlca-allow lib/*.py scripts/*.py tests/*.py)
 
 step "bash -n"

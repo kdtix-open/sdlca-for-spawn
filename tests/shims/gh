@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Test shim for the GitHub CLI: records every call on one line and answers from SHIM_GH_* settings.
+#   SHIM_GH_NO_PROJECT_SCOPE   `gh auth status` does not list the project scope
+#   SHIM_GH_PROJECTS           titles `gh project list` prints, one per line
+#   SHIM_GH_FIELDS             field names `gh project field-list` prints, one per line
+#   SHIM_GH_REFUSE_VISIBILITY  `gh project edit --visibility` is refused, as it is for a non-owner
+#   SHIM_GH_REFUSE             any other call whose arguments contain this text fails with a 403
+line=""
+for a in "$@"; do line="$line ${a//$'\n'/ }"; done
+printf 'GH: %s\n' "${line# }" >> "${SHIM_LOG:-/dev/null}"
+case "$1 ${2:-}" in
+  "auth status")
+    if [ -n "${SHIM_GH_NO_PROJECT_SCOPE:-}" ]; then
+      echo "  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'"
+    else
+      echo "  - Token scopes: 'gist', 'project', 'read:org', 'repo', 'workflow'"
+    fi
+    exit 0
+    ;;
+  "project list") printf '%s' "${SHIM_GH_PROJECTS:-}"; [ -z "${SHIM_GH_PROJECTS:-}" ] || echo; exit 0 ;;
+  "project create") echo 18; exit 0 ;;
+  "project field-list") printf '%s' "${SHIM_GH_FIELDS:-}"; [ -z "${SHIM_GH_FIELDS:-}" ] || echo; exit 0 ;;
+  "project edit")
+    if [ -n "${SHIM_GH_REFUSE_VISIBILITY:-}" ] && [[ "$*" == *--visibility* ]]; then
+      echo "GraphQL: Viewer not authorized to change project visibility (updateProjectV2)" >&2
+      exit 1
+    fi
+    ;;
+esac
+if [ -n "${SHIM_GH_REFUSE:-}" ] && [[ "$*" == *"$SHIM_GH_REFUSE"* ]]; then
+  echo "gh: HTTP 403 (shim)" >&2
+  exit 1
+fi
+exit 0

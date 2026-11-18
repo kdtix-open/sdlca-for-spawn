@@ -28,7 +28,7 @@ On an empty repository the order matters, because the branch rules need pull req
 4. **Wait for the first CI run on `main`.** The check "Lint and test" should pass.
 5. **Apply the ruleset.** `bash scripts/setup-github.sh --repo kdtix-open/sdlca-for-spawn --apply --ruleset`. If a ruleset named `main` exists, the script updates it instead of making a copy.
 6. **Do the manual steps** in the sections on Discussions and the Project below, and any step the script reported as refused.
-7. **Create the Project.** `bash scripts/setup-project.sh` (dry run), then `bash scripts/setup-project.sh --apply`. It makes a new Project every time, so it stops if one with the same title exists.
+7. **Create the Project.** `bash scripts/setup-project.sh` (dry run), then `bash scripts/setup-project.sh --apply`. It makes a new Project every time, so it stops if one with the same title exists. If a run stops half way, finish the Project with `--number <its number>`: nothing is created, and a field that exists is skipped. Only an organization owner can make a Project public. If the account that runs the script is a member, the script leaves the Project private, says so, and an owner makes it public afterwards (the Project's settings, Visibility).
 8. **Work through the "before you announce" checklist.**
 
 ## Repository settings
@@ -237,7 +237,7 @@ Manual steps:
 
 ## The Project
 
-`scripts/setup-project.sh` creates one public Project for the `kdtix-open` organization, titled "SDLCA agent kit: roadmap and triage", gives it a short description that says it is unofficial, and links it to `kdtix-open/sdlca-for-spawn`. It uses `gh project`, so it needs the `project` scope. Options are `--owner`, `--repo`, `--title` and `--apply`.
+`scripts/setup-project.sh` creates one public Project for the `kdtix-open` organization, titled "SDLCA agent kit: roadmap and triage", gives it a short description that says it is unofficial, and links it to `kdtix-open/sdlca-for-spawn`. It uses `gh project`, so it needs the `project` scope. Options are `--owner`, `--repo`, `--title`, `--number` and `--apply`.
 
 It creates these fields:
 
@@ -261,6 +261,7 @@ We have not scripted these. GitHub may offer API calls for views and for a field
 1. **Status options.** Edit the Status field and set its options to: Triage, Backlog, Ready, In progress, In review, Done.
 2. **Built-in workflows.** In the Project's menu, open Workflows and turn these on, as they are named when we write this: "Auto-add to project" for `kdtix-open/sdlca-for-spawn` (issues and pull requests); "Item added to project", which sets Status to Triage; "Item closed" and "Pull request merged", which set Status to Done; and "Item reopened", which sets Status to Backlog.
 3. **Views.** Create the five views below. These are our proposals; change them as you learn what you use.
+4. **Visibility.** If the script said it could not make the Project public, an organization owner sets it: open the Project, then Settings, then Visibility, and choose Public. Until then only the organization's members can see it.
 
 | View | Layout | Filter | Group and fields | Why |
 | --- | --- | --- | --- | --- |
