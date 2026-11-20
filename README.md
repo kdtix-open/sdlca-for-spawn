@@ -21,7 +21,8 @@ This is early software. Nothing has been released yet (the first release is plan
 | Direct an agent from Spawn chat: a message from the owner starts one agent turn inside the right world's git clone | Direct agents from a Slack workspace. Only an example Slack app manifest exists |
 | Runs the agent command you choose: any tool that reads a prompt on standard input. Tested with Claude Code 2.1 only | Ready-made adapters for other providers. None ship, and our examples for other tools are unverified |
 | Linux with systemd user services. Tested on Ubuntu 26.04 under WSL2 | macOS service support (launchd, macOS's service manager) |
-| A screenshot of a world with `sdlca-look` (the tests check its arguments and output path; taking the screenshot is not tested) | Camera control, because the camera cannot turn toward objects yet |
+| A screenshot of a world with `sdlca-look` (the tests cover its checks, its time limit and its cleanup with a stand-in client and browser; taking a real screenshot is not tested) | Camera control, because the camera cannot turn toward objects yet |
+| A body for an agent, made from a picture of your own with `sdlca-body` (a dry run unless you add `--apply`; the tests use a stand-in Spawn) | A face for the agent, and a body that stays visible in a world: today the agent only stands in a world while it takes a screenshot |
 | Lint, tests and continuous integration (CI) on every change. Sign-offs are checked by hand | An automatic check of the Developer Certificate of Origin (DCO) sign-off |
 
 The table shows the main planned items. The [roadmap](docs/community/roadmap.md) has the full list and tracks it. No dates are promised.

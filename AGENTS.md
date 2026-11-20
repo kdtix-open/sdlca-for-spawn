@@ -23,7 +23,7 @@ Run both before you say a change is done. If a lint tool is missing locally the 
 
 ## Layout
 
-- `bin/` commands (`sdlca-*`). `lib/` shared code: `common.sh`, `route.py`, `render_prompt.py`, `linesplit.py`, `cursor.py`, `dedupe.py`, `ratelimit.py`, `safeurl.py`, `gitcred.py`, `shot.mjs`.
+- `bin/` commands (`sdlca-*`). `lib/` shared code: `common.sh`, `route.py`, `render_prompt.py`, `linesplit.py`, `cursor.py`, `dedupe.py`, `ratelimit.py`, `safeurl.py`, `gitcred.py`, `refresh.py`, `body.py`, `shot.mjs`.
 - `templates/` starter files: `scripts/install.sh` copies `AGENTS.md`, `WORK-TODO.md` and `allowlist.json` to a user's runtime home, and the prompt and the env example are read from here. `systemd/` unit template. `slack/` example manifest (the bridge is planned).
 - `scripts/` `install.sh`, `lint.sh` (which runs `check-secrets.sh` and `check-links.py`) and the GitHub setup scripts. `tests/` Python unit tests, shell tests, and shims in `tests/shims/`.
 - `docs/` documentation. Start at `docs/contributing/development.md`.
@@ -36,7 +36,7 @@ Run both before you say a change is done. If a lint tool is missing locally the 
 - A command's usage lives in its header comment. Never write a command, flag, file or variable in docs that you have not checked in the code.
 - Tests: add or update tests for any behavior change. Never delete or weaken a failing test to get green.
 - Docs: plain English, American spelling, ISO dates, sentence-case headings, no emoji. Mark unbuilt things "planned".
-- Be most careful in `lib/route.py`, `lib/common.sh`, `lib/safeurl.py`, `lib/gitcred.py`, `bin/sdlca-on-chat`, `bin/sdlca-api` and `bin/sdlca-token`. They decide who may trigger work and where tokens go. Add a test for every change there.
+- Be most careful in `lib/route.py`, `lib/common.sh`, `lib/safeurl.py`, `lib/gitcred.py`, `lib/refresh.py`, `lib/body.py`, `bin/sdlca-on-chat`, `bin/sdlca-api`, `bin/sdlca-body`, `bin/sdlca-look` and `bin/sdlca-token`. They decide who may trigger work and where tokens go, or they run with an account's credentials outside the agent's own limits. Add a test for every change there.
 
 ## Hard rules
 

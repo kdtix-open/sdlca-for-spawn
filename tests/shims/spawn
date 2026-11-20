@@ -5,7 +5,38 @@
 #   client  `join` prints a local page address (the screenshot tool reads it); `leave` prints nothing
 #   login   behaves like the real client: writes a token file and, as the real one does, adds a credential
 #           helper to the GLOBAL git configuration. An invite starting with sbk_bad is refused.
+# What `client join` and `client leave` do can be changed, for the tests of sdlca-look (all off by default). A join prints a line
+# "  page : http://127.0.0.1:<port> (shim)", the form of the line the real client prints for the page (its label, then the address). A join also
+# logs "SPAWN-JOIN-AS: <the token file it was started with>", which says which account it joined as:
+#   SHIM_JOIN_FAIL=<text>         the join is refused and prints a line that holds <text> as a credential, on standard error
+#   SHIM_JOIN_SECRET=<text>       a successful join also prints <text> as a credential, on standard output and on standard error
+#   SHIM_JOIN_BROWSER=1           start a stand-in for the browser, as the real join does for a page: a process that outlives the join, sits in a
+#                                 session of its own with its output sent away, listens on a local port, and has a helper process. The page
+#                                 address names its port. Its process ids go to $SHIM_OUT/browser.pids ("main helper port") and its port to
+#                                 $SHIM_OUT/browser.port.
+#   SHIM_JOIN_PORT=<port>         the page address names this port (and no stand-in is started)
+#   SHIM_JOIN_DECOY=<port>        before the page line, a line of other text that holds http://127.0.0.1:<port>, as a player's name could
+#   SHIM_JOIN_SECOND_PORT=<port>  after the page line, a second page line that names another port
+#   SHIM_JOIN_NO_PAGE=1           the join succeeds and prints no page line
+#   SHIM_JOIN_PAGE_HOST=<host>    the page line names this host instead of 127.0.0.1
+#   SHIM_JOIN_HANG=<seconds>      hang that long before the page line is printed (a join that waits for a room)
+#   SHIM_JOIN_DELAY=<seconds>     take that long before the page line is printed, and then go on (a join that is slow but works)
+#   SHIM_JOIN_LINGER=<seconds>    after the page line, stay alive that long (a join that has shown its page and does not end)
+#   SHIM_BROWSER_IGNORE_TERM=1    the stand-in browser ignores SIGTERM, so only SIGKILL stops it
+#   SHIM_LEAVE_STOPS_BROWSER=1    `leave` stops the stand-in browser, as a client that closes its own browser would
+#   SHIM_LEAVE_HANG=<seconds>     `leave` hangs that long
+# Like the real client (a script that bun runs), the shim loads ./bunfig.toml and ./.env from the folder it starts in: when either is
+# there it writes $SHIM_OUT/loaded-from-cwd. It also logs "SPAWN-CWD: <the folder it started in>" for `client` calls. The tests of
+# sdlca-look use both to show that the tool never starts the client in the caller's folder.
 printf 'SPAWN: %s\n' "$*" >> "${SHIM_LOG:-/dev/null}"
+if [ "${1:-}" = client ]; then
+  printf 'SPAWN-CWD: %s\n' "$PWD" >> "${SHIM_LOG:-/dev/null}"
+  if [ -n "${SPAWN_TOKEN+x}" ]; then token_state="set"; else token_state="unset"; fi
+  printf 'SPAWN-TOKEN-ENV: %s\n' "$token_state" >> "${SHIM_LOG:-/dev/null}"
+  for loaded in bunfig.toml .env; do
+    [ ! -e "./$loaded" ] || echo "spawn shim: loaded ./$loaded from $PWD" >> "${SHIM_OUT:-/dev/null}/loaded-from-cwd"
+  done
+fi
 case "${1:-}" in
   events)
     echo "spawn events: listening (shim)" >&2
@@ -18,7 +49,45 @@ case "${1:-}" in
           echo "join refused: credential=$SHIM_JOIN_FAIL" >&2
           exit 1
         fi
-        echo "joined as a body; page at http://127.0.0.1:9222 (shim)"
+        if [ -n "${SHIM_JOIN_SECRET:-}" ]; then
+          echo "join credential: $SHIM_JOIN_SECRET"
+          echo "join grant: $SHIM_JOIN_SECRET" >&2
+        fi
+        printf 'SPAWN-JOIN-AS: %s\n' "${SPAWN_TOKEN_FILE:-}" >> "${SHIM_LOG:-/dev/null}"
+        port="${SHIM_JOIN_PORT:-9222}"
+        if [ -n "${SHIM_JOIN_BROWSER:-}" ] && [ -z "${SHIM_JOIN_PORT:-}" ]; then
+          pids="${SHIM_OUT:?}/browser.pids"
+          : > "$pids"
+          setsid python3 -I -B -c 'import os, signal, socket, subprocess, sys, time
+if sys.argv[1:] == ["ignore-term"]:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(5)
+helper = subprocess.Popen(["sleep", "600"])
+print(os.getpid(), helper.pid, s.getsockname()[1], flush=True)
+time.sleep(600)' ${SHIM_BROWSER_IGNORE_TERM:+ignore-term} > "$pids" 2> /dev/null < /dev/null &
+          for _ in $(seq 100); do [ -s "$pids" ] && break; sleep 0.05; done
+          read -r _ _ port < "$pids"
+          echo "$port" > "${SHIM_OUT:?}/browser.port"
+        fi
+        echo "joined: session look (shim)"
+        [ -z "${SHIM_JOIN_DECOY:-}" ] || echo "room: 2 entities, 2 players (see http://127.0.0.1:$SHIM_JOIN_DECOY, you)"
+        [ -z "${SHIM_JOIN_HANG:-}" ] || exec sleep "$SHIM_JOIN_HANG"
+        [ -z "${SHIM_JOIN_DELAY:-}" ] || sleep "$SHIM_JOIN_DELAY"
+        echo "you are embodied; your senses and hands:"
+        if [ -z "${SHIM_JOIN_NO_PAGE:-}" ]; then
+          echo "  page : http://${SHIM_JOIN_PAGE_HOST:-127.0.0.1}:$port (shim)"
+          [ -z "${SHIM_JOIN_SECOND_PORT:-}" ] || echo "  page : http://127.0.0.1:$SHIM_JOIN_SECOND_PORT (shim)"
+        fi
+        [ -z "${SHIM_JOIN_LINGER:-}" ] || exec sleep "$SHIM_JOIN_LINGER"
+        ;;
+      leave)
+        [ -z "${SHIM_LEAVE_HANG:-}" ] || sleep "$SHIM_LEAVE_HANG"
+        if [ -n "${SHIM_LEAVE_STOPS_BROWSER:-}" ] && [ -s "${SHIM_OUT:-/nonexistent}/browser.pids" ]; then
+          read -r first second _ < "$SHIM_OUT/browser.pids"
+          kill "$first" "$second" 2> /dev/null || true
+        fi
         ;;
     esac
     ;;

@@ -100,7 +100,7 @@ def main(argv):
         sys.exit("sdlca-say: SPAWN_TOKEN_FILE is not set; run under sdlca-as <account>")
     token = safeurl.read_token(token_file)
     origin = safeurl.check_origin(os.environ.get("SPAWN_ORIGIN", "https://www.spawn.co"))
-    opener = safeurl.opener()
+    opener = safeurl.opener(direct=origin.startswith("http://"))  # a plain-http origin is this machine: never through a proxy
     run_id = uuid.uuid4().hex[:12]  # one id per call: a retry of the same line keeps its nonce, a new reply gets new ones
     for index, line in enumerate(lines):
         nonce = "%s-%d" % (run_id, index)

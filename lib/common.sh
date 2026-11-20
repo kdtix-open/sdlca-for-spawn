@@ -51,6 +51,10 @@ load_account() {
   # shellcheck disable=SC1091
   . "$ACC/env"
   set +a
+  # Spawn's client reads SPAWN_TOKEN before it reads the token file (SPAWN_TOKEN_FILE). A SPAWN_TOKEN left in the caller's shell (a
+  # personal token used for a test, say) would make every command run as this account act as somebody else, or fail with "this account
+  # is a person's". The account's own token file is the only token, so it is removed here, and an env file cannot set it either.
+  unset SPAWN_TOKEN
   : "${OWNER:?OWNER is not set in $ACC/env}" "${SPAWN_USERNAME:?SPAWN_USERNAME is not set in $ACC/env}" "${SPAWN_TOKEN_FILE:?SPAWN_TOKEN_FILE is not set in $ACC/env}"
   [ -r "$SPAWN_TOKEN_FILE" ] || die "token file is not readable: $SPAWN_TOKEN_FILE"
   export ACC ACCOUNT

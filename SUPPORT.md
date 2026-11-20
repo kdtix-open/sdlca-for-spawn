@@ -52,7 +52,7 @@ The more you tell us, the faster we can help. You do not need to know the techni
 - **The steps**, or the command you ran. The smallest steps that show the problem are the best gift.
 - **Your version:** run `git rev-parse --short HEAD` in your clone of the kit, or give the release tag.
 - **Your system:** the operating system, and the versions of bash, Python, Bun and the Spawn client if you know them.
-- **Your agent command**, written without any keys (for example `claude -p`).
+- **Your agent command**, written without any keys (for example `claude -p --setting-sources user`).
 - **Log lines** from `handler.log` or `listener.log`: only the few lines that matter, and only after you remove tokens and other people's messages. `handler.log` can hold anything the agent printed, so also remove file contents, home-folder paths, usernames and world names you do not want public. Replace what you remove with `REDACTED`.
 - **A description of any screenshot.** Describe what is in it in words as well, so everyone can read your report.
 

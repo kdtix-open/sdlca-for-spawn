@@ -8,13 +8,25 @@ Reads the event JSON on stdin. Environment:
   SPAWN_USERNAME    this agent account's own Spawn username (never allowed: prevents reply loops)
   SDLCA_SPAWN_HOME  runtime home holding allowlist.json and worlds.json
 
-Prints one tab-separated line:  kind  cursor  event-id  decision  sender  address  working-directory  lock
+Prints one tab-separated line:  kind  cursor  event-id  decision  sender  address  working-directory  lock  git
   decision is "allow" or "deny:<reason>". Chat text is never printed or logged.
   An event that names no known world gets a scratch directory of its own, never the runtime home
   (which holds every account's token).
+  git is the git address that sdlca-worlds recorded for the world (the "git" field of its entry in worlds.json,
+  taken from Spawn's own listing and never from the clone), or "-" when there is none. The handler hands it to
+  lib/refresh.py, which fetches from that address only. It is the last field, and a reader must name it: bash's read gives
+  the rest of the line to its last variable.
 
 Fail closed: an unreadable allowlist means only the owner may trigger work; an unknown sender is denied;
 a human handle (@name) and an agent handle (@@name) are different people.
+
+A second use, for sdlca-look:  route.py --serves <address>   (environment: OWNER, ACCOUNT, SDLCA_SPAWN_HOME)
+  Exit 0 and print the world's current address when this account can reach a world whose address, or one of its old
+  addresses (aliases), is exactly that text. Exit 1 and print nothing when it cannot (a registry file that is missing
+  serves nothing). Exit 2 for a usage or setup error, for a registry file that is damaged (it cannot be read, is not
+  JSON, or is not a JSON object), and when more than one world the account can reach answers to the text. A current
+  address wins over an old one: a world that has the address now is the one that is found, whatever the order of the
+  registry. It never looks at ids or at part of a text: the caller acts as the account on the strength of the answer.
 """
 import json
 import os
@@ -122,10 +134,70 @@ def worlds_of(owner, registry, account=None):
     ]
 
 
+class AmbiguousAddress(Exception):
+    """More than one world that the account can reach answers to the same address."""
+
+
+class DamagedRegistry(Exception):
+    """worlds.json exists, and cannot be read as a JSON object."""
+
+
+def world_by_address(address, owner, registry, account=None):
+    """The entry of a world this account can reach whose current address, or one of its old addresses (aliases), is exactly this
+    text; None when there is none. Unlike find_world it never looks at ids and never at part of a text, because a caller that
+    joins a world as the account decides on the strength of the answer. The comparison is exact (case included).
+
+    A world's old address can be a world's current address again (a name that was given up and taken by another world). The world that
+    has the address NOW wins, so the answer does not depend on the order of the registry; an old address is used only when no world
+    has it as its current one. Two worlds that answer in the same way (two with that current address, or none and two with that old
+    one) are ambiguous, and raise AmbiguousAddress: the caller must not guess which one to act in."""
+    account = account or owner
+    if not isinstance(address, str) or not address:
+        return None
+    current, old = [], []
+    for _, world in world_entries(registry):
+        if not serves(world, account, owner):
+            continue
+        aliases = world.get("aliases")
+        if world.get("address") == address:
+            current.append(world)
+        elif address in (aliases if isinstance(aliases, list) else []):
+            old.append(world)
+    for found in (current, old):
+        if len(found) > 1:
+            raise AmbiguousAddress(address)
+        if found:
+            return found[0]
+    return None
+
+
+def read_registry(path):
+    """The registry as a dict. A file that is not there is an empty registry (nothing is served). One that is there and cannot be read, is not
+    JSON, or is not a JSON object is damaged (DamagedRegistry): that must not look like "nothing is served", because the person is then told to
+    run a command that refuses a damaged file as well, when what they have to do is mend the file."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        raise DamagedRegistry(path)
+    if not isinstance(data, dict):
+        raise DamagedRegistry(path)
+    return data
+
+
 def lock_name(world, account):
     if not world:
         return re.sub(r"[^A-Za-z0-9_.-]", "_", "unrouted__%s" % account)
     return re.sub(r"[^A-Za-z0-9_.-]", "_", "%s__%s" % (world.get("owner", ""), world.get("slug", "")))
+
+
+def recorded_git(world):
+    """The git address recorded for a world, or "" when the world is unknown, has none, or it is not text. Only a string counts: the value
+    is handed to code that fetches from it, so a number or a list in a hand-edited registry must read as "none recorded"."""
+    git = world.get("git") if world else None
+    return git if isinstance(git, str) else ""
 
 
 def clean(value):
@@ -133,7 +205,37 @@ def clean(value):
     return re.sub(r"[\t\r\n]", " ", str(value)) or "-"
 
 
+def serves_main(args):
+    """The --serves command (see the top of this file). Every way of not answering "yes" prints nothing on standard output."""
+    owner = os.environ.get("OWNER", "")
+    account = os.environ.get("ACCOUNT") or owner
+    home = os.environ.get("SDLCA_SPAWN_HOME") or os.path.expanduser("~/.sdlca/spawn")
+    if len(args) != 2 or args[0] != "--serves" or not owner or not account:
+        print("usage: route.py --serves <address>   (environment: OWNER, ACCOUNT, SDLCA_SPAWN_HOME)", file=sys.stderr)
+        return 2
+    path = os.path.join(home, "worlds.json")
+    try:
+        world = world_by_address(args[1], owner, read_registry(path), account)
+        if world is None:
+            return 1
+        current = world.get("address")
+        print(clean(current if isinstance(current, str) and current else args[1]))  # a world found by an old address is joined by its current one
+    except DamagedRegistry:
+        print("route.py --serves: %s is damaged (it cannot be read, or it is not a JSON object); fix it or move it aside, and then run sdlca-worlds --apply" % path, file=sys.stderr)
+        return 2
+    except AmbiguousAddress:
+        print("route.py --serves: more than one world that this account can reach has that address (one as its address, or more as an old one); "
+              "fix %s so that only one does" % path, file=sys.stderr)
+        return 2
+    except Exception as error:  # nothing else may print a traceback into a caller's output
+        print("route.py --serves: %s" % type(error).__name__, file=sys.stderr)
+        return 2
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1:
+        sys.exit(serves_main(sys.argv[1:]))
     event = json.load(sys.stdin)
     owner = os.environ["OWNER"]
     account = os.environ.get("ACCOUNT") or owner
@@ -153,6 +255,7 @@ def main():
         world.get("address", "-") if world else "-",
         (world.get("clone_path") if world else "") or os.path.join(home, "run", "scratch", account),
         lock_name(world, account),
+        recorded_git(world),
     ]
     print("\t".join(clean(f) for f in fields))
 

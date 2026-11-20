@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""lib/dedupe.py, lib/ratelimit.py and lib/safeurl.read_token: the small state and guard helpers."""
+"""lib/dedupe.py, lib/ratelimit.py, lib/safeurl.read_token and lib/safeurl.opener: the small state and guard helpers."""
 import os
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import helpers
 import safeurl
@@ -131,6 +135,101 @@ class ReadTokenTests(unittest.TestCase):
     def test_a_visible_ascii_token_of_any_shape_is_accepted(self):
         self.write(b"!#$%&'()*+,-./0123456789:;<=>?@AZ[]^_`az{|}~")
         self.assertEqual(safeurl.read_token(self.path), "!#$%&'()*+,-./0123456789:;<=>?@AZ[]^_`az{|}~")
+
+
+class _Redirect(BaseHTTPRequestHandler):
+    code = 302
+    target = ""
+
+    def go(self):
+        self.send_response(_Redirect.code)
+        self.send_header("Location", _Redirect.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = go
+
+    def log_message(self, *args):
+        pass
+
+
+class _Sink(BaseHTTPRequestHandler):
+    """Another host: whatever reaches it was sent there, with the token if one was in the request."""
+
+    hits = []
+
+    def hit(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        _Sink.hits.append((self.command, self.headers.get("Authorization")))
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    do_GET = do_POST = hit
+
+    def log_message(self, *args):
+        pass
+
+
+def _serve(handler):
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+PROBE = """
+import sys, urllib.request
+sys.path.insert(0, sys.argv[1])
+import safeurl
+request = urllib.request.Request(sys.argv[2], headers={"Authorization": "Bearer token_for_the_test"})
+try:
+    with safeurl.opener(direct=(sys.argv[3] == "direct")).open(request, timeout=10) as response:
+        print("answered", response.status)
+except Exception as error:
+    print("failed", type(error).__name__)
+"""
+
+
+class OpenerTests(unittest.TestCase):
+    """The opener every Python tool sends the token with: a redirect is never followed, and a plain-http origin never goes through a proxy."""
+
+    def setUp(self):
+        _Sink.hits = []
+        self.origin = _serve(_Redirect)
+        self.other = _serve(_Sink)
+
+    def tearDown(self):
+        for server in (self.origin, self.other):
+            server.shutdown()
+            server.server_close()
+
+    def test_no_kind_of_redirect_is_followed_for_a_get_or_a_post(self):
+        _Redirect.target = "http://127.0.0.1:%d/steal" % self.other.server_port
+        url = "http://127.0.0.1:%d/" % self.origin.server_port
+        for code in (301, 302, 303, 307, 308):
+            _Redirect.code = code
+            for data in (None, b"{}"):
+                request = urllib.request.Request(url, data=data, headers={"Authorization": "Bearer token_for_the_test"})
+                with self.assertRaises(urllib.error.HTTPError, msg=(code, data)) as caught:
+                    safeurl.opener().open(request, timeout=10)
+                self.assertEqual(caught.exception.code, code)
+        self.assertEqual(_Sink.hits, [])
+
+    def test_a_plain_http_origin_never_goes_through_a_proxy_from_the_environment(self):
+        url = "http://127.0.0.1:%d/" % self.origin.server_port
+        _Redirect.code = 200  # the origin answers 200 with an empty body, which is enough to see who was asked
+        lib = os.path.join(helpers.ROOT, "lib")
+        env = {"http_proxy": "http://127.0.0.1:%d" % self.other.server_port}
+        control = helpers.run(["python3", "-I", "-B", "-c", PROBE, lib, url, "default"], env=env)
+        self.assertIn("answered", control.stdout, control.stderr)
+        self.assertEqual([auth for _, auth in _Sink.hits], ["Bearer token_for_the_test"])  # the control: the default opener does use the proxy
+        _Sink.hits = []
+        direct = helpers.run(["python3", "-I", "-B", "-c", PROBE, lib, url, "direct"], env=env)
+        self.assertIn("answered", direct.stdout + direct.stderr)
+        self.assertEqual(_Sink.hits, [])
 
 
 if __name__ == "__main__":

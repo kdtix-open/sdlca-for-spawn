@@ -53,6 +53,24 @@ class Recorder(BaseHTTPRequestHandler):
         pass
 
 
+class ProxySink(BaseHTTPRequestHandler):
+    """A proxy named in the environment: whatever reaches it was sent to it, with the token if the request carried one."""
+
+    hits = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        ProxySink.hits.append(self.headers.get("Authorization"))
+        self.send_response(200)
+        self.send_header("Content-Length", "11")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+
+    def log_message(self, *args):
+        pass
+
+
 class SayTests(unittest.TestCase):
     def setUp(self):
         Recorder.posts = []
@@ -76,6 +94,21 @@ class SayTests(unittest.TestCase):
 
     def say(self, args, text):
         return helpers.run(["python3", "-I", "-B", os.path.join(helpers.ROOT, "bin", "sdlca-say")] + args, env=self.env, stdin=text)
+
+    def test_a_proxy_in_the_environment_is_never_used_for_a_plain_http_origin(self):
+        ProxySink.hits = []
+        proxy = HTTPServer(("127.0.0.1", 0), ProxySink)
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        try:
+            address = "http://127.0.0.1:%d" % proxy.server_port
+            env = dict(self.env, http_proxy=address, HTTP_PROXY=address)
+            result = helpers.run(["python3", "-I", "-B", os.path.join(helpers.ROOT, "bin", "sdlca-say"), "dm", "@alice", "-"], env=env, stdin="hello there")
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ProxySink.hits, [], "the token went to the proxy")
+        self.assertEqual([auth for _, auth, _ in Recorder.posts], ["Bearer sak_test_token"])
 
     def test_room_reply_is_split_numbered_and_authenticated(self):
         result = self.say(["room", "@alice/game-1", "main", "dev", "7"], " ".join("word%d" % i for i in range(120)))

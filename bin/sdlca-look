@@ -2,18 +2,179 @@
 # SPDX-License-Identifier: Apache-2.0
 # Join a world with a software-rendered eye, save one screenshot, and leave.
 # usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]
+#        sdlca-look --check [account]
 # The camera starts facing yaw 0 (level) and does not turn toward objects yet.
+#
+# What it refuses, before it joins anything:
+#   - A world this account does not serve. The address (or an old address of a renamed world, which is joined under its current
+#     one) must be listed for the account in worlds.json, by the rule that routes chat events (lib/route.py). The person who runs
+#     the kit adds a world with:  <kit folder>/bin/sdlca-as <account> <kit folder>/bin/sdlca-worlds --apply --only <@owner/world>
+#   - Inside an agent turn, any account but the turn's own. sdlca-on-chat sets SDLCA_TURN_ACCOUNT for the agent command, and then
+#     only that account may be named. (A person's own shell has no such variable.)
+#   - An output that is not a NEW .png under /tmp, $TMPDIR or $SDLCA_SPAWN_HOME/shots (an absolute path, no .., and nothing there
+#     yet: no file, no link, no folder). The picture is made in a private folder of this tool's own and placed at that path at the
+#     very end, as a new file that never follows a link, so a link planted at the path while the look runs is not written through.
+# The client and the screenshot tool run in that private, empty folder and never in the caller's. The caller is an agent working in
+# a world's clone, and bun (which runs both) loads a bunfig.toml (its "preload" runs code) and a .env from the folder it starts in,
+# so a clone that held either would run code as the kit's user, whoever pushed it.
+# While it runs, the body is in the world and every player in the room can see it. The join and the screenshot together get
+# SDLCA_LOOK_TIMEOUT seconds (a whole number from 1 to 3600, default 240), and wait-seconds must be less than that. However it
+# ends (done, refused, out of time, a signal), the body leaves; then a browser that the join started and left behind is stopped,
+# by finding what listens on the page's port (Linux: it reads /proc), which takes up to about 20 seconds more. The body also ends
+# by itself 30 seconds after the time limit (the join's --ttl). The page address is taken only from the client's own "page :"
+# line, exactly one of them, and if a program already listens at the port it names, that program must have started after this
+# look did. So an address planted in other text (a player's name, a chat line) cannot point the screenshot at another program on
+# this machine, and a program that was already running is never attached to, nor stopped.
+# Nothing the client prints is shown or stored, because it can hold join credentials. Only the page address is kept.
+# The software renderer draws nothing until the world has loaded, which can take a minute or more, so the first pictures are blank
+# (about 4 KB; a real scene is many times that). The first picture is taken after wait-seconds (default 8). While a picture is
+# blank (under 20000 bytes) this waits SDLCA_LOOK_POLL seconds (1 to 300, default 10) and takes another, until the time limit. When
+# a real picture came only after blank ones, the scene is still filling in: it waits SDLCA_LOOK_SETTLE seconds (0 to 300, default
+# 20), takes one more and keeps that. A real picture at the first try is kept as it is.
+#
+# --check joins nothing and uses no network. It says whether each thing a look needs is in place (python3, timeout, the spawn
+# client, bun, playwright-core in the kit's folder, the shots folder, the account if one is given, and a usable time limit), with
+# a fix for each that is missing, and exits 1 when one is. It cannot see the browser: the Spawn client starts its own for a look,
+# and what Spawn publishes does not say where it keeps one. A note says so, and what to do if the first look fails at the join.
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
-[ "$#" -ge 3 ] || die "usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]"
+
+USAGE="usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]   or: sdlca-look --check [account]"
+WORLD_RE='^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+# The client's line that gives the page (its label "page :", then http://127.0.0.1:<port>, then more text), cut down to the address.
+PAGE_SED='s#^[[:space:]]*page[[:space:]]*:[[:space:]]*(http://127\.0\.0\.1:[1-9][0-9]{0,4})([/[:space:]].*)?$#\1#p'
+
+# turn_guard <account>: inside an agent turn only the turn's own account may be named (sdlca-say and sdlca-api have no account
+# argument: they act as the account whose token file is in the environment, and this tool must not be a way round that).
+turn_guard() {
+  [ -z "${SDLCA_TURN_ACCOUNT:-}" ] || [ "$1" = "$SDLCA_TURN_ACCOUNT" ] ||
+    die "inside an agent turn only the turn's own account ($SDLCA_TURN_ACCOUNT) may be named"
+}
+
+# time_limit: print the limit for a whole run in seconds, from SDLCA_LOOK_TIMEOUT (a whole number from 1 to 3600, default 240).
+time_limit() {
+  local t="${SDLCA_LOOK_TIMEOUT:-240}"
+  [[ "$t" =~ ^[0-9]{1,4}$ ]] || return 1
+  t=$((10#$t))
+  [ "$t" -ge 1 ] && [ "$t" -le 3600 ] || return 1
+  printf '%s' "$t"
+}
+
+# look_seconds <NAME> <default> <min> <max>: print the value of that variable (or the default) as a whole number of seconds from min to
+# max, or fail without saying anything.
+look_seconds() {
+  local v="${!1:-$2}"
+  [[ "$v" =~ ^[0-9]{1,3}$ ]] || return 1
+  v=$((10#$v))
+  { [ "$v" -ge "$3" ] && [ "$v" -le "$4" ]; } || return 1
+  printf '%s' "$v"
+}
+
+check_ok() { printf '  ok       %s\n' "$1"; }
+check_fix() {
+  printf '  MISSING  %s  -> %s\n' "$1" "$2"
+  CHECK_FAILED=1
+}
+# look_check [account]: the --check report. It only looks at files and runs `command -v`: it does not start the client (which may
+# fetch its own code) or bun, joins nothing and uses no network.
+look_check() {
+  local account="${1:-}" where msg shots limit
+  CHECK_FAILED=0
+  echo "sdlca-look: what a look needs (nothing is joined and no network is used)"
+  if where="$(command -v python3)"; then check_ok "python3 ($where)"; else check_fix "python3" "install Python 3.9 or newer"; fi
+  if where="$(command -v timeout)"; then check_ok "timeout ($where)"; else check_fix "timeout" "install GNU coreutils"; fi
+  if where="$(command -v spawn)"; then check_ok "the spawn client ($where)"; else check_fix "the spawn client" "bun add -g @spawnco/client"; fi
+  if where="$(command -v bun)"; then check_ok "bun ($where)"; else check_fix "bun" "https://bun.sh"; fi
+  if [ -d "$SDLCA_CODE_DIR/node_modules/playwright-core" ]; then
+    check_ok "playwright-core in $SDLCA_CODE_DIR/node_modules"
+  else
+    check_fix "playwright-core in $SDLCA_CODE_DIR/node_modules" "(cd '$SDLCA_CODE_DIR' && bun install)"
+  fi
+  # The browser belongs to the Spawn client, which starts its own for a look. Spawn's published guide does not say where it keeps one,
+  # so this check does not look for it: it says so, and says what to do if the first look fails at the join.
+  printf '  note     the browser: the Spawn client starts its own for a look, and this check cannot see it. If the first look fails at the join, run:  spawn client join <world> --render cpu   and read what the client says\n'
+  shots="$SDLCA_SPAWN_HOME/shots"
+  if [ -d "$shots" ] && [ -w "$shots" ]; then
+    check_ok "the shots folder ($shots)"
+  elif [ -d "$shots" ]; then
+    check_fix "the shots folder ($shots) is not writable" "chmod u+w '$shots'"
+  elif [ -e "$shots" ] || [ -L "$shots" ]; then
+    check_fix "the shots folder ($shots) is not a folder" "move it away, then run: mkdir -p '$shots'"
+  elif [ -d "$SDLCA_SPAWN_HOME" ] && [ -w "$SDLCA_SPAWN_HOME" ]; then
+    check_ok "the shots folder ($shots does not exist yet; a look makes it when it needs it)"
+  else
+    check_fix "the shots folder ($shots)" "mkdir -p '$shots' (scripts/install.sh does this)"
+  fi
+  if [ -z "$account" ]; then
+    printf '  skipped  the account (none given: sdlca-look --check <account>)\n'
+  elif msg="$(load_account "$account" 2>&1)"; then
+    load_account "$account" # again, here, so that the account's own settings (SDLCA_LOOK_TIMEOUT) count below
+    check_ok "the account $account loads"
+  else
+    msg="${msg%%$'\n'*}"
+    check_fix "the account $account" "${msg#*: }"
+  fi
+  if limit="$(time_limit)"; then
+    check_ok "the time limit, $limit seconds (SDLCA_LOOK_TIMEOUT)"
+  else
+    check_fix "a usable time limit (SDLCA_LOOK_TIMEOUT is '${SDLCA_LOOK_TIMEOUT:-}')" "set it to a whole number of seconds from 1 to 3600, or remove it"
+  fi
+  if look_seconds SDLCA_LOOK_POLL 10 1 300 > /dev/null && look_seconds SDLCA_LOOK_SETTLE 20 0 300 > /dev/null; then
+    check_ok "the waits between pictures (SDLCA_LOOK_POLL and SDLCA_LOOK_SETTLE)"
+  else
+    check_fix "usable waits between pictures (SDLCA_LOOK_POLL is '${SDLCA_LOOK_POLL:-}', SDLCA_LOOK_SETTLE is '${SDLCA_LOOK_SETTLE:-}')" "set SDLCA_LOOK_POLL to a whole number of seconds from 1 to 300 and SDLCA_LOOK_SETTLE from 0 to 300, or remove them"
+  fi
+  if [ "$CHECK_FAILED" -ne 0 ]; then
+    echo "something is missing: do what each MISSING line says, then run this again"
+  else
+    echo "everything a look needs is in place"
+  fi
+  return "$CHECK_FAILED"
+}
+
+case "${1:-}" in
+  -h | --help)
+    usage_header "$0"
+    exit 0
+    ;;
+  --check)
+    shift
+    [ "$#" -le 1 ] || die "usage: sdlca-look --check [account]"
+    CHECK_ACCOUNT="${1:-${SDLCA_TURN_ACCOUNT:-}}"
+    [ -z "$CHECK_ACCOUNT" ] || turn_guard "$CHECK_ACCOUNT"
+    if look_check "$CHECK_ACCOUNT"; then exit 0; else exit 1; fi
+    ;;
+esac
+
+[ "$#" -ge 3 ] || die "$USAGE"
+turn_guard "$1"
 load_account "$1"
 WORLD="$2"
 OUT="$3"
 WAIT="${4:-8}"
 [[ "$WAIT" =~ ^[0-9]+$ ]] || die "wait-seconds must be a whole number"
-[[ "$WORLD" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "the world must look like @owner/world (an option or anything else is refused)"
-# The screenshot is written by Playwright wherever OUT points, so it may only be a new .png in a scratch place.
+[[ "$WORLD" =~ $WORLD_RE ]] || die "the world must look like @owner/world (an option or anything else is refused)"
+LIMIT="$(time_limit)" || die "SDLCA_LOOK_TIMEOUT must be a whole number of seconds from 1 to 3600 (the default is 240), not '${SDLCA_LOOK_TIMEOUT:-}'"
+{ [ "${#WAIT}" -le 4 ] && [ "$((10#$WAIT))" -lt "$LIMIT" ]; } ||
+  die "wait-seconds ($WAIT) must be less than the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT), which covers the join and the screenshot together"
+POLL="$(look_seconds SDLCA_LOOK_POLL 10 1 300)" || die "SDLCA_LOOK_POLL must be a whole number of seconds from 1 to 300 (the default is 10), not '${SDLCA_LOOK_POLL:-}'"
+SETTLE="$(look_seconds SDLCA_LOOK_SETTLE 20 0 300)" || die "SDLCA_LOOK_SETTLE must be a whole number of seconds from 0 to 300 (the default is 20), not '${SDLCA_LOOK_SETTLE:-}'"
+# The world must be one this account serves (lib/route.py has the rule that routes chat events too). An old address of a renamed
+# world is joined under the current one: the old name may belong to a different world now.
+SERVED_RC=0
+SERVED="$(python3 -I -B "$SDLCA_CODE_DIR/lib/route.py" --serves "$WORLD")" || SERVED_RC=$?
+case "$SERVED_RC" in
+  0) ;;
+  1) die "this account ($ACCOUNT) does not serve $WORLD: it is not listed for it in $SDLCA_SPAWN_HOME/worlds.json. The person who runs the kit can run: $SDLCA_CODE_DIR/bin/sdlca-as $ACCOUNT $SDLCA_CODE_DIR/bin/sdlca-worlds --apply --only $WORLD (and then try again)" ;;
+  *) die "could not look $WORLD up in $SDLCA_SPAWN_HOME/worlds.json (lib/route.py --serves failed with status $SERVED_RC; if the line above says that the file is damaged, fix it or move it aside)" ;;
+esac
+[[ "$SERVED" =~ $WORLD_RE ]] || die "worlds.json holds an address for $WORLD that does not look like @owner/world; fix the entry ($SDLCA_CODE_DIR/bin/sdlca-as $ACCOUNT $SDLCA_CODE_DIR/bin/sdlca-worlds --apply --only $WORLD) and try again"
+[ "$SERVED" = "$WORLD" ] || echo "sdlca-look: $WORLD is an old address; joining it as $SERVED" >&2
+WORLD="$SERVED"
+# The picture is made by Playwright in a private folder of this tool's own and placed at OUT at the end (see place_shot), so OUT may
+# only be a NEW .png, as an absolute path, in a scratch place. The tool changes folder below, so a relative path would mean another file.
+case "$OUT" in /*) ;; *) die "the output must be an absolute path (got: $OUT)" ;; esac
 case "$OUT" in
   /tmp/*.png | "${TMPDIR:-/tmp}"/*.png | "$SDLCA_SPAWN_HOME"/shots/*.png) ;;
   *) die "the output must be a .png under /tmp, \$TMPDIR or $SDLCA_SPAWN_HOME/shots (got: $OUT)" ;;
@@ -21,18 +182,299 @@ esac
 case "$OUT" in *..*) die "the output path must not contain .." ;; esac
 case "$OUT" in "$SDLCA_SPAWN_HOME"/shots/*) mkdir -p "$SDLCA_SPAWN_HOME/shots" ;; esac
 [ -d "$(dirname "$OUT")" ] || die "the folder for the screenshot does not exist: $(dirname "$OUT")"
-if [ -L "$OUT" ] || { [ -e "$OUT" ] && [ ! -f "$OUT" ]; }; then die "refusing to write to $OUT (a link or not a regular file)"; fi
-command -v spawn >/dev/null 2>&1 || die "the spawn client is not installed (bun add -g @spawnco/client)"
-command -v bun >/dev/null 2>&1 || die "bun is not installed"
+if [ -e "$OUT" ] || [ -L "$OUT" ]; then die "refusing to write to $OUT: something is there already (a file, a link or a folder); give a name that does not exist yet"; fi
+command -v spawn > /dev/null 2>&1 || die "the spawn client is not installed (bun add -g @spawnco/client)"
+command -v bun > /dev/null 2>&1 || die "bun is not installed"
+command -v timeout > /dev/null 2>&1 || die "timeout is not installed (GNU coreutils)"
 [ -d "$SDLCA_CODE_DIR/node_modules/playwright-core" ] ||
   die "playwright-core is missing; run: (cd '$SDLCA_CODE_DIR' && bun install)"
+
 NAME="look$$"
-cleanup() { spawn client leave --name "$NAME" > /dev/null 2>&1 || true; }
-trap cleanup EXIT
-JOIN="$(spawn client join "$WORLD" --render cpu --name "$NAME" --ttl 300 2>&1)" || {
-  # What the client printed can hold join credentials, so it is not repeated here (it would reach logs and chat).
-  die "join failed; run 'spawn client join $WORLD --render cpu' by hand to read the client's own message"
+CHILD="" CDP=""
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sdlca-look.XXXXXX")" # private (mode 0700); it holds the page address and the picture until it is placed
+case "$WORK" in /*) ;; *) WORK="$PWD/$WORK" ;; esac # (a relative TMPDIR)
+SHOT="$WORK/shot.png"
+case "$SDLCA_CODE_DIR" in /*) ;; *) SDLCA_CODE_DIR="$(cd "$SDLCA_CODE_DIR" && pwd -P)" ;; esac # the paths below must still mean the same after the cd
+# From here on everything runs in that private, empty folder and not in the caller's. The caller is an agent working in a world's
+# clone, which other people can push to, and bun (which runs the client and the screenshot tool) loads ./bunfig.toml, whose "preload"
+# runs code, and ./.env from the folder it starts in: a clone that held either would run code as this user whenever the tool ran.
+cd "$WORK"
+
+# proc_start <pid>: when the process began, in clock ticks since boot (field 22 of /proc/<pid>/stat). It fails when there is no such
+# process, or no /proc.
+proc_start() {
+  local line
+  local -a f
+  { line="$(< "/proc/$1/stat")"; } 2> /dev/null || return 1
+  read -r -a f <<< "${line##*) }" # what follows "pid (name) ": field 22 is the 20th of it
+  [ -n "${f[19]:-}" ] || return 1
+  printf '%s' "${f[19]}"
 }
-CDP="$(printf '%s' "$JOIN" | grep -oE 'http://127\.0\.0\.1:[0-9]+' | head -n 1 || true)"
-[ -n "$CDP" ] || die "the join did not print a page address"
-bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$OUT" "$WAIT"
+OWN_START="$(proc_start "$$" || true)"
+
+# born_after_us <pid>: the process began after this look did, so it is not one that was already on the machine.
+born_after_us() {
+  local theirs
+  [ -n "$OWN_START" ] || return 1
+  theirs="$(proc_start "$1")" || return 1
+  [ "$theirs" -ge "$OWN_START" ]
+}
+
+# alive <pid>: the process exists and is not a zombie.
+alive() {
+  local line
+  { line="$(< "/proc/$1/stat")"; } 2> /dev/null || return 1
+  line="${line##*) }" # what follows "pid (name) ": the state comes first
+  [ "${line%% *}" != Z ]
+}
+
+# listener_pids <port>: the pids of this user's processes that hold a listening TCP socket on that port, one per line. It reads /proc
+# (Linux); without it, it prints nothing.
+listener_pids() {
+  local hex inode
+  hex="$(printf '%04X' "$1")"
+  {
+    awk -v want=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == want { print $10 }' /proc/net/tcp /proc/net/tcp6 2> /dev/null |
+      while read -r inode; do
+        find /proc/[0-9]*/fd -maxdepth 1 -lname "socket:\\[$inode\\]" 2> /dev/null
+      done | sed -n 's#^/proc/\([0-9][0-9]*\)/fd/.*#\1#p' | sort -un
+  } || true
+}
+
+# tree_pids <pid>...: those processes and every process below them, one per line (read from /proc).
+tree_pids() {
+  local -A parent=() keep=()
+  local -a rest
+  local f line pid p more
+  for p in "$@"; do keep[$p]=1; done
+  for f in /proc/[0-9]*/stat; do
+    { line="$(< "$f")"; } 2> /dev/null || continue
+    pid="${line%% *}"
+    read -r -a rest <<< "${line##*) }"
+    parent[$pid]="${rest[1]:-}"
+  done
+  more=1
+  while [ "$more" -eq 1 ]; do
+    more=0
+    for p in "${!parent[@]}"; do
+      if [ -z "${keep[$p]:-}" ] && [ -n "${parent[$p]}" ] && [ -n "${keep[${parent[$p]}]:-}" ]; then
+        keep[$p]=1
+        more=1
+      fi
+    done
+  done
+  printf '%s\n' "${!keep[@]}"
+}
+
+# page_owners <port>: the processes that hold the page's port and began after this look did, which is to say what the join started.
+page_owners() {
+  local pid
+  for pid in $(listener_pids "$1"); do
+    if born_after_us "$pid"; then printf '%s\n' "$pid"; fi
+  done
+}
+
+# page_answers <port>: something still accepts a connection there.
+page_answers() {
+  (exec 3<> "/dev/tcp/127.0.0.1/$1") 2> /dev/null
+}
+
+# stop_page: after `leave`, make sure the browser of this look is gone. The client's own end of that can fail (a join that hung, a
+# client that does not close its browser). The browser is whatever holds the page's port and began after this look did; it is
+# stopped together with everything it started: TERM first, and KILL for what is still there. Something that holds the port but
+# began earlier is not ours, and is left alone.
+stop_page() {
+  local port roots="" tree sig pid left_over
+  [ -n "$CDP" ] || return 0
+  port="${CDP##*:}"
+  for _ in 1 2 3 4; do # `leave` may still be closing it
+    roots="$(page_owners "$port")"
+    [ -n "$roots" ] || break
+    sleep 0.5
+  done
+  if [ -z "$roots" ]; then
+    # Nothing of ours holds it. If something still answers and nobody can be seen holding it (there is no /proc, or the program is
+    # another user's), this look cannot tell whether it is the join's browser.
+    if page_answers "$port" && [ -z "$(listener_pids "$port")" ]; then
+      echo "sdlca-look: something still answers at $CDP and this look cannot see which program holds it; if it is a browser the join started, stop it by hand" >&2
+    fi
+    return 0
+  fi
+  # shellcheck disable=SC2086  # a list of pids, one word each
+  tree="$(tree_pids $roots)"
+  for sig in TERM KILL; do
+    # shellcheck disable=SC2086
+    kill -s "$sig" $tree 2> /dev/null || true
+    for _ in 1 2 3 4; do
+      left_over=""
+      for pid in $tree; do
+        if alive "$pid"; then left_over="$left_over $pid"; fi
+      done
+      [ -n "$left_over" ] || return 0
+      sleep 0.5
+    done
+  done
+  echo "sdlca-look: a browser that the join started is still running (process ids:$left_over); stop it by hand" >&2
+}
+
+# cleanup runs on every way out (the EXIT trap; a signal first turns into an exit). It keeps the exit status of the run.
+cleanup() {
+  local rc=$?
+  set +e
+  trap ':' INT TERM HUP # a second signal must not cut the cleanup short
+  if [ -n "$CHILD" ]; then
+    kill -s TERM "$CHILD" 2> /dev/null
+    wait "$CHILD" 2> /dev/null
+  fi
+  timeout -k 2 10 spawn client leave --name "$NAME" > /dev/null 2>&1 < /dev/null
+  stop_page
+  cd / 2> /dev/null # not inside the folder that is removed next
+  rm -rf "$WORK"
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+
+# run_limited <seconds> <command...>: run it for at most that long. It runs in the background and is waited for, so that a signal
+# sent to this script is handled at once: a command in the foreground would hold the signal back until the command ended.
+run_limited() {
+  local secs="$1" rc=0
+  shift
+  [ "$secs" -ge 1 ] || return 124 # never `timeout 0`, which means no limit at all
+  timeout -k 5 "$secs" "$@" &
+  CHILD=$!
+  wait "$CHILD" || rc=$?
+  CHILD=""
+  return "$rc"
+}
+left() { printf '%s' "$((LIMIT - SECONDS))"; }
+
+# The join runs inside a small shell whose only job is to filter what the client prints: of all of it (which can hold credentials),
+# only the page address is written to a file, and nothing else is kept or shown. sed is unbuffered (-u): a join that prints the page
+# line and then stays alive is stopped when the time is up, and a buffered sed would be killed with the line unwritten, so the browser
+# that the join started could not be found and stopped.
+# shellcheck disable=SC2016  # the single quotes are deliberate: the inner shell expands its own arguments
+JOIN_SH='spawn client join "$1" --render cpu --name "$2" --ttl "$3" 2>&1 < /dev/null | sed -u -n -E "$5" > "$4"; exit "${PIPESTATUS[0]}"'
+
+# place_shot: put the finished picture at $OUT as a NEW file. The picture was made inside $WORK, which only this user can enter, and
+# not at $OUT, because a look takes seconds to minutes and the path is in a shared place (/tmp): a link planted there meanwhile would
+# be written through by the screenshot tool, as this user. Here the folder is opened without following a link, and the file is made
+# with O_CREAT|O_EXCL|O_NOFOLLOW, which fails for anything that exists at that name, a link included, and so never writes through one.
+# shellcheck disable=SC2016  # Python, not shell
+PLACE_PY='import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+folder, name = os.path.split(dst)
+nofollow = getattr(os, "O_NOFOLLOW", 0)
+try:
+    with open(src, "rb") as handle:
+        data = handle.read()
+    parent = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600, dir_fd=parent)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        except BaseException:
+            os.unlink(name, dir_fd=parent)
+            raise
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+except OSError as error:
+    sys.exit("sdlca-look: could not save the picture at %s: %s (something appeared there while the look ran, or the folder is gone)" % (dst, error.strerror or type(error).__name__))'
+
+SECONDS=0
+JOIN_RC=0
+run_limited "$(left)" bash -c "$JOIN_SH" _ "$WORLD" "$NAME" "$((LIMIT + 30))" "$WORK/page" "$PAGE_SED" || JOIN_RC=$?
+mapfile -t PAGES < <(sort -u "$WORK/page" 2> /dev/null || true)
+[ "${#PAGES[@]}" -ne 1 ] || CDP="${PAGES[0]}" # known now, so that the cleanup can look for what listens there
+case "$JOIN_RC" in
+  0) ;;
+  124 | 137) die "the join did not finish within the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT); run 'spawn client join $WORLD --render cpu' by hand to see why" ;;
+  # What the client printed can hold join credentials, so it is not repeated here (it would reach logs and chat).
+  *) die "join failed; run 'spawn client join $WORLD --render cpu' by hand to read the client's own message" ;;
+esac
+[ "${#PAGES[@]}" -ge 1 ] || die "the join did not print a page address"
+[ "${#PAGES[@]}" -eq 1 ] || die "the join printed more than one page address; refusing to choose between them"
+for pid in $(listener_pids "${CDP##*:}"); do
+  born_after_us "$pid" ||
+    die "the page address names port ${CDP##*:}, which a program that was already running before this look began holds; refusing to attach to it, because it is not a browser that this join started"
+done
+[ "$(left)" -ge 1 ] || die "the join used up the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT) before the screenshot could start"
+# The software renderer draws nothing until the world has loaded, which can take a minute or more, so the first pictures are blank (about
+# 4 KB; a real scene is many times that). The first picture is taken after wait-seconds. While a picture is blank this waits
+# SDLCA_LOOK_POLL seconds and takes another, until the time limit. When a real picture came only after blank ones, the scene is still
+# filling in: it waits SDLCA_LOOK_SETTLE seconds, takes one more and keeps that. A real picture at the first try is kept as it is.
+MIN_REAL=20000 # bytes: below this a picture counts as blank
+GOOD="$WORK/good.png"
+HAVE=0 BLANK_SEEN=0 SETTLING=0 TIMED_OUT=0 BUSY_SEEN=0 NOTED=0 SHOT_RC=0 SHOT_SIZE=0
+
+# take_shot <wait-seconds>: one picture, into $SHOT. It sets SHOT_RC (the tool's status: 124 or 137 means that this attempt ran out of
+# time, 3 that the page was too busy drawing to answer, which shot.mjs says on its own) and SHOT_SIZE (the picture's size in bytes, or 0).
+take_shot() {
+  local cap=$((10#$1 + 45))
+  [ "$(left)" -ge "$cap" ] || cap="$(left)"
+  rm -f "$SHOT"
+  SHOT_RC=0
+  # The tool's own "saved <path>" line is not shown: its path is the private one. This tool says where the picture is, below.
+  run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" < /dev/null > /dev/null || SHOT_RC=$?
+  SHOT_SIZE=0
+  if [ "$SHOT_RC" -eq 0 ] && [ -f "$SHOT" ]; then SHOT_SIZE="$(wc -c < "$SHOT" | tr -d ' ')"; fi
+}
+
+# pause <seconds>: wait, but never past the time limit. It waits the way run_limited does, so that a signal is handled at once.
+pause() {
+  local n="$1"
+  [ "$n" -le "$(left)" ] || n="$(left)"
+  [ "$n" -ge 1 ] || return 0
+  run_limited "$((n + 5))" sleep "$n" || true
+}
+
+next_wait="$WAIT"
+while [ "$(left)" -ge 1 ]; do
+  take_shot "$next_wait"
+  next_wait=1
+  case "$SHOT_RC" in
+    0)
+      TIMED_OUT=0
+      if [ ! -f "$SHOT" ]; then
+        [ "$HAVE" -eq 1 ] && break
+        die "the screenshot tool finished but made no picture"
+      fi
+      if [ "$SHOT_SIZE" -ge "$MIN_REAL" ]; then
+        mv -f "$SHOT" "$GOOD"
+        HAVE=1
+      fi
+      ;;
+    124 | 137) TIMED_OUT=1 ;; # this attempt ran out of time; there may be time for another
+    3) TIMED_OUT=0 BUSY_SEEN=1 ;; # the page is too busy drawing to answer while the world loads: ask again
+    *)
+      [ "$HAVE" -eq 1 ] && break
+      exit "$SHOT_RC" # the screenshot tool has said why
+      ;;
+  esac
+  [ "$SETTLING" -eq 0 ] || break # that was the picture after the settling wait: done, whatever it was
+  if [ "$HAVE" -eq 1 ]; then
+    [ "$BLANK_SEEN" -eq 1 ] || break # a real picture at the first try: done
+    SETTLING=1
+    pause "$SETTLE"
+    continue
+  fi
+  BLANK_SEEN=1 # no real picture yet, whatever the reason: a real one that comes later is a late one, and the scene may still be filling in
+  if [ "$NOTED" -eq 0 ]; then
+    NOTED=1
+    echo "sdlca-look: no real picture yet: the software renderer draws nothing until the world has loaded, which can take a minute or more. Waiting for it (up to $LIMIT seconds in all)" >&2
+  fi
+  pause "$POLL"
+done
+if [ "$HAVE" -ne 1 ]; then
+  [ "$TIMED_OUT" -eq 0 ] || die "the screenshot did not finish within the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT)"
+  [ "$BUSY_SEEN" -eq 0 ] || die "no picture could be taken when the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT) ran out: the page was too busy drawing to answer, because the world had not finished loading in the software renderer. Try again with a larger SDLCA_LOOK_TIMEOUT"
+  die "every picture was blank when the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT) ran out: the software renderer draws nothing until the world has loaded, and this world had not finished loading. Try again with a larger SDLCA_LOOK_TIMEOUT"
+fi
+python3 -I -B -c "$PLACE_PY" "$GOOD" "$OUT" || exit 1 # it has said why
+echo "saved $OUT"

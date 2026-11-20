@@ -40,6 +40,17 @@ cp "$ACC/env" "$ACC/token" "$SDLCA_SPAWN_HOME/accounts/sdlca-for-spawn/"
 "$ROOT/bin/sdlca-as" sdlca-for-spawn true; check "an account name may contain hyphens (for example a coordinator account)" test $? -eq 0
 chmod 666 "$ACC/env"
 "$ROOT/bin/sdlca-as" alice true 2> "$TMP/err"; check "a group- or world-writable env file is refused" grep -q 'writable by group or others' "$TMP/err"
+chmod 600 "$ACC/env"
+# shellcheck disable=SC2016  # the single quotes are deliberate: the inner shell expands its own variables
+show_token='printf "%s|%s" "${SPAWN_TOKEN-unset}" "${SPAWN_TOKEN_FILE-none}"'
+SPAWN_TOKEN=sak_stray_personal_token bash -c "$show_token" > "$TMP/control"
+check "control: a command that does NOT go through sdlca-as sees the stray SPAWN_TOKEN, so the check below can fail" test "$(cut -d'|' -f1 "$TMP/control")" = sak_stray_personal_token
+SPAWN_TOKEN=sak_stray_personal_token "$ROOT/bin/sdlca-as" alice bash -c "$show_token" > "$TMP/seen"
+check "a SPAWN_TOKEN left in the caller's shell does not reach what sdlca-as runs: the client would read it before the account's token file" test "$(cut -d'|' -f1 "$TMP/seen")" = unset
+check "  and the account's own token file is still named" test "$(cut -d'|' -f2 "$TMP/seen")" = "$ACC/token"
+printf 'SPAWN_TOKEN=sak_set_by_the_env_file\n' >> "$ACC/env"
+"$ROOT/bin/sdlca-as" alice bash -c "$show_token" > "$TMP/seen"
+check "an env file cannot set SPAWN_TOKEN for what it runs either" test "$(cut -d'|' -f1 "$TMP/seen")" = unset
 teardown
 
 echo "sdlca-api only ever sends the token to the Spawn origin"

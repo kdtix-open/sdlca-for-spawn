@@ -22,8 +22,13 @@ def read_token(path):
     return token
 
 
-def opener():
-    return urllib.request.build_opener(_Refuse)
+def opener(direct=False):
+    """An opener that never follows a redirect. With direct=True it also ignores the proxy settings of the environment: for a plain-http
+    origin (this machine only, see check_origin) a proxy would carry the token, in clear text, to another host."""
+    handlers = [_Refuse]
+    if direct:
+        handlers.insert(0, urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
 
 
 def check_origin(origin, allow_file=False):

@@ -13,6 +13,8 @@ setup() {
   # Nothing may reach the developer's real git or systemd files, whatever their environment says.
   while read -r var; do unset "$var"; done < <(compgen -v | grep -E '^GIT_CONFIG_(KEY|VALUE)_[0-9]+$')
   unset GIT_CONFIG_COUNT GIT_CONFIG_SYSTEM GIT_CONFIG_PARAMETERS
+  # Nor may a repository the developer is in the middle of (git exports these to filter-branch and a few other tools) take the tests' git commands.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
   export XDG_CONFIG_HOME="$HOME/.config" GIT_CONFIG_GLOBAL="$HOME/.gitconfig" GIT_CONFIG_NOSYSTEM=1
   export SDLCA_SPAWN_HOME="$TMP/spawn"
   export SHIM_LOG="$TMP/shim.log"
@@ -29,7 +31,7 @@ SPAWN_TOKEN_FILE=$SDLCA_SPAWN_HOME/accounts/alice/token
 ENV
   chmod 600 "$SDLCA_SPAWN_HOME/accounts/alice/env"
   cat > "$SDLCA_SPAWN_HOME/worlds.json" << JSON
-{"worlds":{"w-111":{"owner":"alice","slug":"game-1","address":"@alice/game-1","appId":"app-111","clone_path":"$TMP/clones/alice/game-1","aliases":[]}}}
+{"worlds":{"w-111":{"owner":"alice","slug":"game-1","address":"@alice/game-1","appId":"app-111","clone_path":"$TMP/clones/alice/game-1","aliases":[],"git":"https://git.spawn.co/@alice/game-1.git"}}}
 JSON
   ACC="$SDLCA_SPAWN_HOME/accounts/alice"
 }

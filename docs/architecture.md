@@ -1,6 +1,6 @@
 # Architecture
 
-This page is for a technically curious person deciding whether to trust and run the SDLCA agent kit, and for a contributor who needs the mental model before changing it. You will learn what the parts are, what happens to one chat message from start to finish, why the design looks the way it does, and what the kit deliberately leaves out. It was checked against the kit's code on 2026-11-17.
+This page is for a technically curious person deciding whether to trust and run the SDLCA agent kit, and for a contributor who needs the mental model before changing it. You will learn what the parts are, what happens to one chat message from start to finish, why the design looks the way it does, and what the kit deliberately leaves out. It was checked against the kit's code on 2026-11-17, and its parts about the git address and `sdlca-look` on 2026-11-18.
 
 The kit is an unofficial community project. It is not made, reviewed or supported by Spawn. For setup, see [Getting started](getting-started.md). For the trust questions, see [Security model](security-model.md).
 
@@ -9,7 +9,7 @@ The kit is an unofficial community project. It is not made, reviewed or supporte
 The kit is a handful of small programs, written in shell and in Python that uses only the standard library, plus one small JavaScript file that takes screenshots. It has no server of its own and no database. Everything it remembers lives in plain files under one folder, the runtime home. Spawn's own client does the networking for the inbox. The kit adds three things on top:
 
 1. A check of who may start work.
-2. A choice of which world's clone the agent starts in.
+2. A choice of which world's clone the agent starts in, and an update of that clone, by fast-forward only, just before the turn.
 3. A run of your agent command, with a prompt on its standard input, and a way for the agent to answer in chat.
 
 A few words used on this page:
@@ -40,6 +40,7 @@ flowchart LR
     handler["sdlca-on-chat<br/>one process per event"]
     route["lib/route.py<br/>sender gate and world match"]
     prompt["lib/render_prompt.py<br/>builds the prompt"]
+    refresh["lib/refresh.py<br/>fast-forward update of the clone"]
     agent["Your agent command<br/>SDLCA_AGENT_CMD"]
     say["sdlca-say<br/>splits replies into lines"]
     clone["World clone<br/>on your disk"]
@@ -49,14 +50,16 @@ flowchart LR
   client -->|"runs once per event"| handler
   handler --> route
   handler --> prompt
+  handler -->|"under a per-world lock, before the turn"| refresh
+  refresh -->|"fetch, then fast-forward only"| clone
   handler -->|"prompt on stdin, under a per-world lock"| agent
   agent -->|"reads and edits"| clone
-  clone <-->|"git pull and push"| git
+  clone <-->|"kit: fetch, fast-forward. agent: fetch, rebase, push"| git
   agent --> say
   say -->|"chat lines"| chat
 ```
 
-In words: the listener starts Spawn's client, which holds the account's inbox stream open. For every event the client starts the handler. The handler asks `lib/route.py` whether the sender is allowed and which world the event is about, builds a prompt, takes that world's lock and runs your agent command inside the world's clone. The agent edits the clone, pulls and pushes with git, and answers through `sdlca-say`, which posts to the world's chat.
+In words: the listener starts Spawn's client, which holds the account's inbox stream open. For every event the client starts the handler. The handler asks `lib/route.py` whether the sender is allowed and which world the event is about, builds a prompt, takes that world's lock, brings the world's clone up to date by fast-forward only (`lib/refresh.py`) and runs your agent command inside the clone. The agent edits the clone, pushes with git, and answers through `sdlca-say`, which posts to the world's chat.
 
 The pieces, by file:
 
@@ -64,14 +67,16 @@ The pieces, by file:
 | --- | --- | --- |
 | Listener | [`bin/sdlca-listen`](../bin/sdlca-listen) | Starts Spawn's client for one account and hands every event to the handler. |
 | Handler | [`bin/sdlca-on-chat`](../bin/sdlca-on-chat) | Deals with one event: gate, dedupe, cap, lock, agent run, cursor. |
-| Classifier | [`lib/route.py`](../lib/route.py) | Reads an event, decides allow or deny, finds the world and names the lock. Prints one tab-separated line. |
+| Classifier | [`lib/route.py`](../lib/route.py) | Reads an event, decides allow or deny, finds the world, names the lock and hands on the git address that `sdlca-worlds` recorded for the world. Prints one tab-separated line. |
 | Prompt builder | [`lib/render_prompt.py`](../lib/render_prompt.py) with [`templates/handler-prompt.md`](../templates/handler-prompt.md) | Fills the prompt template. Uses `handler-prompt.md` from the runtime home when you have one. |
+| Clone update | [`lib/refresh.py`](../lib/refresh.py) | Runs before an agent turn in a world's clone, given the clone and the world's recorded git address. Fetches the checked-out branch from that address (and from no other) and fast-forwards when that is a straight line, otherwise changes nothing and says why. Prints one tab-separated line (`STATUS`, `CODE`, `TEXT`) for the handler, and never fails a turn. |
 | Shared shell code | [`lib/common.sh`](../lib/common.sh) | Account loading and checks, the origin check, the curl wrapper that keeps tokens off the command line (it runs `curl -q --globoff` and refuses a token with odd characters in it), log lines, `umask 077`. |
 | Cursor, duplicates, cap | [`lib/cursor.py`](../lib/cursor.py), [`lib/dedupe.py`](../lib/dedupe.py), [`lib/ratelimit.py`](../lib/ratelimit.py) | The bookmark, the list of handled event ids, the runs-per-hour cap. |
 | Chat output | [`bin/sdlca-say`](../bin/sdlca-say) with [`lib/linesplit.py`](../lib/linesplit.py) | Splits a reply into 200-character lines and posts them at a pace Spawn accepts. |
 | Spawn API calls | [`bin/sdlca-api`](../bin/sdlca-api), [`lib/safeurl.py`](../lib/safeurl.py) | Authenticated calls that send the token only to the Spawn origin. `sdlca-api` also refuses a JSON body that starts with `@`, because curl would read a local file of that name and send it. The origin is checked with `common.sh`; the Python tools (`sdlca-say`, `sdlca-worlds`) use `safeurl.py`, which also refuses redirects. |
-| World registry | [`bin/sdlca-worlds`](../bin/sdlca-worlds) with [`lib/gitcred.py`](../lib/gitcred.py) | Keeps `worlds.json` and the clones in step with Spawn. `gitcred.py` builds each clone's git settings, with a credential helper for the world's git host only. |
-| Setup and helpers | [`bin/sdlca-onboard`](../bin/sdlca-onboard), [`bin/sdlca-token`](../bin/sdlca-token), [`bin/sdlca-friends`](../bin/sdlca-friends), [`bin/sdlca-allow`](../bin/sdlca-allow), [`bin/sdlca-as`](../bin/sdlca-as), [`bin/sdlca-look`](../bin/sdlca-look) with [`lib/shot.mjs`](../lib/shot.mjs) | Create an agent account from an invite, store and check a token (`sdlca-token`: `init`, `add`, `path`, `verify`, `list`), accept the owner's friend request, edit the allowlist, run a command as an account, take a screenshot. |
+| World registry | [`bin/sdlca-worlds`](../bin/sdlca-worlds) with [`lib/gitcred.py`](../lib/gitcred.py) | Keeps `worlds.json` and the clones in step with Spawn, and records the git address that Spawn lists for each world (when it is one a credential helper can be attached to). `gitcred.py` builds each clone's git settings, with a credential helper for the world's git host only, and holds the one parser for a git address that `sdlca-worlds` and `lib/refresh.py` share. |
+| Agent body | [`bin/sdlca-body`](../bin/sdlca-body) with [`lib/body.py`](../lib/body.py) | Run by a person, never by the agent. Gives an agent account a body made from a picture, or puts an existing body on it, through Spawn's character doors: upload, sculpt, wait, wear; or carries a model file to Spawn through a world's asset doors. A dry run until `--apply`; it never repeats a call that makes something, records a started sculpt in `body-sculpt.json` so that a second one is not started by accident, refuses an account that is not an agent, and runs only outside an agent turn. |
+| Setup and helpers | [`bin/sdlca-onboard`](../bin/sdlca-onboard), [`bin/sdlca-token`](../bin/sdlca-token), [`bin/sdlca-friends`](../bin/sdlca-friends), [`bin/sdlca-allow`](../bin/sdlca-allow), [`bin/sdlca-as`](../bin/sdlca-as), [`bin/sdlca-look`](../bin/sdlca-look) with [`lib/shot.mjs`](../lib/shot.mjs) | Create an agent account from an invite, store and check a token (`sdlca-token`: `init`, `add`, `path`, `verify`, `list`), accept the owner's friend request, edit the allowlist, run a command as an account, take a screenshot (`sdlca-look`: only of a world the account serves, inside a time limit, and it always leaves; `--check` says what is missing). |
 
 ## Life of one event
 
@@ -89,13 +94,14 @@ sequenceDiagram
   Spawn-->>Client: chat_mention event on the inbox stream
   Client->>H: Runs the handler with the event JSON
   H->>R: Event JSON
-  R-->>H: Decision, world, clone path, lock name
+  R-->>H: Decision, world, clone path, lock name, recorded git address
   alt Sender not allowed
     H->>H: Log DENIED and move the cursor
     Note over H: No reply, so nobody can probe the agent
   else Sender allowed
     H->>H: Skip if already handled, check the hourly cap
     H->>H: Render the prompt, wait for the world lock
+    H->>H: Update the world's clone, fast-forward only
     H->>A: Prompt on stdin, working directory is the clone
     A->>Spawn: Read the line and what followed through sdlca-api
     A->>A: Edit files and run git in the clone
@@ -126,7 +132,7 @@ After step 6 the client is the process that systemd supervises.
 
 1. **A new process starts** for every event, with the event JSON in `$SPAWN_EVENT` (the handler also reads standard input if that variable is empty). The handler loads the account again, so most settings take effect on the next event without a restart.
 2. **The raw token is removed.** Spawn's client puts the token in `SPAWN_TOKEN` for the hook. The agent never needs it, so the handler unsets `SPAWN_TOKEN` and `SPAWN_EVENT` before anything else runs.
-3. **The event is classified** by `lib/route.py`, which prints one line: kind, cursor, event id, decision, sender, world address, working directory and lock name. If the event is not valid JSON the handler logs `ERROR event could not be parsed; skipped`, leaves the cursor alone and stops.
+3. **The event is classified** by `lib/route.py`, which prints one line: kind, cursor, event id, decision, sender, world address, working directory, lock name and the world's recorded git address (a dash when there is none). If the event is not valid JSON the handler logs `ERROR event could not be parsed; skipped`, leaves the cursor alone and stops.
 4. **The kind decides the path.**
 
    | Kind | What the handler does |
@@ -142,11 +148,13 @@ After step 6 the client is the process that systemd supervises.
 8. **The hourly cap.** `lib/ratelimit.py` counts agent runs started in the last hour (file `runs.log`). At `SDLCA_MAX_RUNS_PER_HOUR` (default 20) the handler logs `RATE-LIMITED`, keeps the event in `run/failed/` and moves the cursor. A value of 0 turns the cap off. If the cap cannot be checked (the value is not a whole number, or `runs.log` cannot be written), the handler logs `ERROR the run cap could not be checked` and leaves the event unhandled, with the cursor where it was.
 9. **The prompt is built.** The handler logs `event sender=<handle> world=<address>`, then `lib/render_prompt.py` fills the template. The event goes into the prompt between `<untrusted_event>` tags, with every `<` written as `\u003c` so the text cannot forge the closing tag.
 10. **The world lock is taken.** The handler waits for an exclusive lock on `run/<world owner>__<world>.lock` for at most `SDLCA_LOCK_WAIT` seconds (default 3600). If the wait runs out it logs `WARN the world was busy for too long; event kept in run/failed`.
-11. **The agent runs.** Still holding the lock, the handler reads `SDLCA_CREDENTIALS_FILE` if you set one, changes into the clone (or into the scratch folder, see [Routing rules](#routing-rules)), and runs the prompt through `timeout -k 10 $SDLCA_AGENT_TIMEOUT bash -c "$SDLCA_AGENT_CMD"`. Everything the agent prints is appended to `handler.log`. The agent does not inherit the lock's file descriptor, so a background process it leaves behind cannot keep the world locked. `timeout` stops the agent and its process group; a process that detaches from the group on purpose (for example with `setsid`) is not stopped.
-12. **The outcome is recorded.** Exit status 0 adds the event id to `handled.ids`, while the lock is still held. Any other status from the agent logs `WARN agent exited with status N` and keeps the event in `run/failed/<id>.json`. The handler uses the numbers 74, 75 and 76 for its own outcomes (credentials unreadable, world busy, already handled). Each has its own log line (`ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed`, the `WARN` about the busy world, and the `SKIP` line from step 7), and an agent command that exits with one of these numbers is logged as status 1.
-13. **The cursor moves**, in every case that reached this step.
+11. **The clone is brought up to date.** Still holding the lock, and only for an event that matched a world, the handler runs `lib/refresh.py` on the clone, with the world's recorded git address (for a direct message there is no world, so nothing runs). The update fetches the branch that is checked out from that address and fast-forwards it when that is a straight line. Otherwise it changes nothing and says why. Without a recorded address it trusts nothing and runs no git (`skipped/unverified`). The handler logs one `WORLD <address> clone <status>/<code>: <text>` line and appends a paragraph to the prompt, in fixed wording, that tells the agent whether the clone is current. Nothing that git said goes into the prompt. The update has its own time limit, `SDLCA_REFRESH_TIMEOUT` (60 seconds for each git call, at least 600 for the fast-forward, `0` turns it off even when `lib/refresh.py` is missing), and the handler stops the whole update after four times that value plus 660 seconds. Its answer never fails the turn: a missing, crashed or timed-out update is logged as `failed/error` or `failed/timeout` and the agent still runs. It runs before the credentials are read, so git never has your provider keys in its environment. See [Why the kit updates the clone, and only by fast-forward](#why-the-kit-updates-the-clone-and-only-by-fast-forward).
+12. **The credentials are read.** If you set `SDLCA_CREDENTIALS_FILE`, the handler first checked that it is readable (an unreadable file stops the turn before step 11), and now reads it as shell, so its variables reach the agent command and nothing before it.
+13. **The agent runs.** Still holding the lock, the handler changes into the clone (or into the scratch folder, see [Routing rules](#routing-rules)), and runs the prompt through `timeout -k 10 $SDLCA_AGENT_TIMEOUT bash -c "$SDLCA_AGENT_CMD"`. Everything the agent prints is appended to `handler.log`. The agent command gets one more variable than the account env has, `SDLCA_TURN_ACCOUNT` (the account's name, set last so no file can change it), which tools that take an account as an argument use to refuse any other (`sdlca-look`), or to refuse to run at all (`sdlca-body`). The agent does not inherit the lock's file descriptor, so a background process it leaves behind cannot keep the world locked. `timeout` stops the agent and its process group; a process that detaches from the group on purpose (for example with `setsid`) is not stopped.
+14. **The outcome is recorded.** Exit status 0 adds the event id to `handled.ids`, while the lock is still held. Any other status from the agent logs `WARN agent exited with status N` and keeps the event in `run/failed/<id>.json`. The handler uses the numbers 74, 75 and 76 for its own outcomes (credentials unreadable, world busy, already handled). Each has its own log line (`ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed`, the `WARN` about the busy world, and the `SKIP` line from step 7), and an agent command that exits with one of these numbers is logged as status 1.
+15. **The cursor moves**, in every case that reached this step.
 
-**During the turn,** the default prompt tells the agent to read the runtime home's `AGENTS.md` and `WORK-TODO.md`, to fetch the message and what followed through `sdlca-api GET '<actionData>'`, to do what was asked, and to answer through `sdlca-say`. The agent may push to a world's `main` branch, which goes live in every open room. A push never publishes the world: publishing is a separate step the owner asks for. The text of the prompt is in [`templates/handler-prompt.md`](../templates/handler-prompt.md), and [Configuration](configuration.md#the-prompt-override) explains how to override it.
+**During the turn,** the default prompt tells the agent to read the runtime home's `AGENTS.md` and `WORK-TODO.md`, to fetch the message and what followed through `sdlca-api GET '<actionData>'`, to do what was asked, and to answer through `sdlca-say`. The last paragraph of the prompt, written by the kit, says whether the clone was brought up to date. The agent may push to a world's `main` branch, which goes live in every open room, and the prompt tells it never to force-push: if a push is rejected it runs `git fetch`, then `git rebase --fork-point origin/main` (a plain rebase can bring back commits that the world removed), checks that its change still works and pushes again, or stops and tells the person if a conflict cannot be resolved. A push never publishes the world: publishing is a separate step the owner asks for. The text of the prompt is in [`templates/handler-prompt.md`](../templates/handler-prompt.md), and [Configuration](configuration.md#the-prompt-override) explains how to override it.
 
 ## Why one listener per account
 
@@ -178,10 +186,30 @@ How the lock behaves:
 - It is `flock`, so the kernel releases it when the holder exits. There are no stale lock files to clean up.
 - A waiting turn gives up after `SDLCA_LOCK_WAIT` seconds, so one stuck turn cannot block a world forever.
 - `timeout` stops an agent that hangs, which frees the lock.
-- The agent does not inherit the lock, so a development server or watcher it leaves behind cannot hold it.
+- The agent does not inherit the lock, so a development server or watcher it leaves behind cannot hold it. The update of the clone does not either.
+- The update of the clone (step 11) runs while the lock is held, so it cannot race another turn in the same world. The handler bounds it (four times `SDLCA_REFRESH_TIMEOUT` plus 660 seconds), so a hung update cannot hold the lock for ever; a turn that waits behind it counts that time against `SDLCA_LOCK_WAIT`.
 - Events with no world use a lock of their own per account, `run/unrouted__<account>.lock`. Two accounts' unrouted events do not block each other. In a lock name, the slash of a grouped account becomes an underscore.
 
 One honest limit: the lock covers the world the event was routed to. A direct message that asks the agent to work in a world is unrouted, so it holds the unrouted lock and not that world's lock. If the agent then changes into that world's clone, it can overlap with a turn that started from the world's own chat. If this matters to you, ask for work in the world's chat, not in a direct message.
+
+## Why the kit updates the clone, and only by fast-forward
+
+A clone is a copy that nobody keeps current. Before this step existed, the prompt told the agent to run `git pull` first, and that failed in the case the kit documents as its safest one: a read-only agent command cannot run git, so the agent answered from whatever was cloned earlier and said that "git pull was denied". In a world that other people push to, that goes stale quickly.
+
+A plain `git pull` is also the wrong tool for a bot. It is a fetch plus a merge, so it can make a merge commit, rebase local commits, or stop in the middle with conflict markers in files the world runs, and a push of that lands on `main` and goes live in every open room. The safe rule is **fast-forward only**: move the local branch forward when it is a straight line from where it is, and otherwise change nothing and say why. A fast-forward never makes a merge commit or a conflict marker and never rewrites history, and with the options the kit uses it never overwrites a file you changed, an untracked file or an ignored file.
+
+The kit cannot tell a read-only agent from a building one, because `SDLCA_AGENT_CMD` is only a command string. So the update is done by the kit itself, in `lib/refresh.py`, before the agent starts, and it has to be safe in both cases. These are the choices behind it:
+
+- **Trusted code, not an instruction.** An instruction in the prompt works only if the agent can run git, and it runs with the agent's tool limits. This runs outside them, which is why it is careful about what it reads (see below).
+- **Under the world's lock.** It cannot race another turn in the same world.
+- **One address, recorded outside the clone.** The clone is a folder the agent may have written to, so the update does not ask it where the world is. `sdlca-worlds` records the git address that Spawn lists for the world in `worlds.json`, `lib/route.py` hands it to the handler and the handler to the update, which fetches from exactly that address (`git fetch -- <address> ...`, not through the name of a remote) and only when the clone's remote and credential helper agree with it. It reads the clone's settings before git reads any object, so a promisor remote that git would ask for a missing commit is refused too. An agent that rewrites the clone's remote, adds a remote that is called like the address, or copies the kit's helper line under another host's scope, gets a refusal and no request: [Security model](security-model.md#updating-the-clone-before-a-turn) says what is still open.
+- **One branch, by fast-forward only.** It fetches the checked-out branch into a ref of its own (`refs/sdlca/refresh-tip`, and no `FETCH_HEAD`, which another git process or a link could change or write through), and into the tracking branch the clone's own fetch rule names for it (a fetch from an address does not write that on its own, and its reflog is what `git rebase --fork-point` reads), and runs `git merge --ff-only --no-overwrite-ignore`. It never merges, rebases, resets, checks out, cleans, stashes or forces. A change you have not committed is kept, and an update that would overwrite one, or an untracked or ignored file, is refused. It looks for lock files first, because git would otherwise write the files and only then find that it cannot move the branch.
+- **Skipped is a normal answer.** A clone with unpushed commits (`ahead`), one that has diverged from the world (`diverged`, which is also what a force-push by the world, or a move back to an older commit, looks like), a detached head, a branch with no upstream and a world with no recorded address (`unverified`) are left alone and reported. The advice in the prompt for those cases uses `git rebase --fork-point`, because a plain rebase would put back commits that the world removed.
+- **The agent is told in fixed words.** The handler ends the prompt with a paragraph chosen by the status and the code. Git's own text and any other string a remote can influence go to the log only, never to the prompt, so a hostile remote cannot write to the agent through the update.
+- **It never fails a turn.** A missing, crashed, confused or timed-out update is logged as `failed/error` or `failed/timeout`, and the agent runs anyway, because a stale answer with a warning is better than no answer. The fast-forward is the one step that is not cut short by a short limit, because stopping a checkout half way leaves a half-updated work tree that every later update would refuse.
+- **The clone is not trusted blindly.** An agent that can edit files can change `.git/config` and `.git/hooks`. The update turns hooks and the file system monitor off on the command line, allows https only, never lets git prompt, removes the environment variables that can redirect git, finds git only through absolute `PATH` entries, and reads the clone's own configuration first, before the fetch and again before the fast-forward. If that configuration can run a program, send git elsewhere (a proxy, a changed certificate check) or use a credential helper that is not the kit's or is scoped to another origin than the recorded address's, or if the clone's remote is not the recorded address, or if a link sits where git writes, it fetches nothing and reports `untrusted`. [Security model](security-model.md#updating-the-clone-before-a-turn) lists what this does and does not cover.
+
+What it leaves out on purpose: a tool the agent itself can call to refresh (the agent would then be running trusted code on its own say-so), refreshing worlds other than the one the message came from, and the git notes that the clone's extra fetch rule names (the fetch names one branch, and a forced update of notes could overwrite a local note). For a direct message, which has no world, the prompt tells the agent that a clone may lag the latest push.
 
 ## Routing rules
 
@@ -189,7 +217,7 @@ Routing answers two questions: where does the agent start, and which lock does i
 
 | Situation | Working directory | Lock |
 | --- | --- | --- |
-| The event names a world this account serves | That world's clone, from the registry | `run/<world owner>__<world>.lock` |
+| The event names a world this account serves | That world's clone, from the registry, which also supplies the world's recorded git address (the last field of the line) | `run/<world owner>__<world>.lock` |
 | A direct message, or a world the registry does not know | `run/scratch/<account>`, a folder the kit makes for this | `run/unrouted__<account>.lock` |
 | The world is known but its clone folder is gone | The scratch folder, without a warning | The world's lock |
 
@@ -228,7 +256,7 @@ The *cursor* is a bookmark in the account's inbox: the newest event the kit has 
 This gives *at-least-once* delivery. If the machine stops after a turn has started and before the cursor moves, the event comes again after the next start. Two things keep that tolerable:
 
 - **A finished turn is not run again.** The handler records the id of every event whose turn exits with status 0 in `accounts/<account>/handled.ids` (the newest 500 ids). A replay of a finished event is skipped.
-- **An interrupted turn is run again.** It never reached status 0, so its id is not recorded. This is the "at least once" part: the owner may see a second answer, and the agent may repeat work such as a commit. The prompt tells the agent to pull first.
+- **An interrupted turn is run again.** It never reached status 0, so its id is not recorded. This is the "at least once" part: the owner may see a second answer, and the agent may repeat work such as a commit. The kit brings the clone up to date before each turn, by fast-forward only, so the second run starts from what the first one pushed. A commit that the first run made and did not push stays in the clone, and the second turn's `WORLD` line says `skipped/ahead`.
 
 A failed turn is not retried automatically. Retrying a failing turn forever could burn money and flood a room, so the kit keeps the event instead and moves on. To run it again by hand:
 
@@ -246,6 +274,7 @@ An event without a safe id cannot be checked for duplicates, and if it has to be
 | The agent runs too long | Sends it SIGTERM at `SDLCA_AGENT_TIMEOUT`, and SIGKILL 10 seconds later if needed | Status 124, or 137 if it had to be killed | Yes | Yes |
 | The world stays locked for more than `SDLCA_LOCK_WAIT` | Gives up without running the agent | `WARN the world was busy for too long` | Yes | Yes |
 | `SDLCA_CREDENTIALS_FILE` is unreadable | Does not run the agent | `ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed` (no `WARN` line follows) | Yes | Yes |
+| The world's clone cannot be brought up to date (not a git folder, not on a branch that follows the world, no git address recorded for the world, commits not pushed, history diverged, settings or remote not trusted, the world unreachable, a local change or a lock file in the way, a time-out, or a missing or crashed `lib/refresh.py`) | Changes nothing it should not, runs the agent anyway, and ends the prompt with a paragraph, in fixed wording, that says the clone may lag the latest push | `WORLD <address> clone <status>/<code>: <text>` in `handler.log` | No | Yes |
 | More than the cap of runs in an hour | Refuses the turn | `RATE-LIMITED ...` | Yes | Yes |
 | The run cap cannot be checked (`SDLCA_MAX_RUNS_PER_HOUR` is not a whole number, or `runs.log` cannot be written) | Stops without running the agent | `ERROR the run cap could not be checked ...; event left unhandled`, exit 1 | No | No |
 | The sender is not allowed | Ignores the event silently | `DENIED sender=... reason=...` | No | Yes |
@@ -284,6 +313,9 @@ Each row is a choice we made, why, and what it costs. If you disagree with one, 
 | The cursor moves past failed events, and they are kept in `run/failed/` | A failing turn must not repeat forever and burn money. | No automatic retry. You replay by hand, before the handler deletes the saved event (after 30 days by default). |
 | An hourly cap on agent runs | Every run can cost money. A flood of mentions should stop at a limit. | A busy owner can hit it. Raise `SDLCA_MAX_RUNS_PER_HOUR`. |
 | `timeout` around the agent and a bounded lock wait | A hung agent must not hold a world for ever. | A legitimate long job is stopped at `SDLCA_AGENT_TIMEOUT`. |
+| The kit brings a world's clone up to date before each turn, by fast-forward only, as trusted code under the world's lock | A read-only agent cannot run git and would read a stale clone, and a plain `git pull` can make a merge commit or leave conflict markers in files the world runs. The kit cannot tell a read-only agent from a building one. | The update is skipped when the clone is not a straight line behind the world, and it needs a check of the clone's own settings, because an agent that can edit files can change `.git/config`. That check cannot list everything. See [Security model](security-model.md#updating-the-clone-before-a-turn). |
+| `sdlca-look` refuses a world the account does not serve and, inside a turn, any account but the turn's own; it has a time limit, always leaves, stops a browser the join left behind, and never prints what the client printed | Allowing a screenshot tool is only as safe as the tool. The agent's rules decide whether it may run it at all, and the kit can only make the tool narrow. | A look needs a browser for the client, and the cleanup that finds a left-behind browser reads `/proc`, so it is Linux only. See [Security model](security-model.md#what-allowing-sdlca-look-means). |
+| `sdlca-body` changes nothing without `--apply`, never repeats a call that makes something, records the sculpt before it asks for it, and refuses to run inside an agent turn | The sculpt is billed to the person the agent is linked to and the result is shown to everyone, so a mistake costs money and is public, and a second sculpt could be billed twice. A run can end at any moment (a lost answer, Ctrl-C, a closed terminal), so the job id on the screen cannot be the only copy. | The kit cannot undo a sculpt that has started (`--reset` takes the body off). The refusal inside a turn stops a mistake, not an agent that can run any command: keep the command off the agent's list, and remember that `sdlca-api *` reaches the same paid doors. |
 | Logs hold metadata, and the listener log holds the client's status lines only | Other people's chat text is private to them. | Less to debug from. The agent's own output goes to `handler.log`. |
 | A systemd user service, with back-off and no restart on status 78 | It is built into most Linux systems, and a user service needs no root to run. | No macOS or Windows service yet. Any supervisor can run `sdlca-listen`. |
 | JSON is parsed in Python, never in shell | Chat text never meets shell parsing. | Python 3 is a requirement. |
@@ -306,6 +338,7 @@ Saying no is part of the design. This is what the kit leaves out.
 | Talking to Savi | Spawn closes Savi to every agent account. The kit never tries. | Nothing: the prompt tells the agent to end with an "Ask Savi:" line for the owner to paste. |
 | macOS launchd and Windows services | Not built. Planned for macOS. | Run `sdlca-listen` under any supervisor. See [Operations](operations.md#running-without-systemd). |
 | Camera control for screenshots | The camera faces one direction and does not turn toward objects. | Planned. See the [roadmap](community/roadmap.md). |
+| A refresh tool the agent can call, or updating worlds other than the one a message came from | The update runs trusted code, so it runs when the kit decides, under the world's lock, and not on the agent's say-so. A direct message names no world, so there is no clone to update. | The agent can run git itself where its posture allows it. Otherwise it is told that the clone may lag. |
 | A web interface, a hosted service, a shared multi-user queue | The kit is a local starter kit for your own machine. | Fork it. |
 
 Where you can extend the kit without touching its core:

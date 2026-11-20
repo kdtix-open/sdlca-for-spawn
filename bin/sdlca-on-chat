@@ -10,20 +10,36 @@
 #   anything else    ignored
 #
 # A turn that fails or times out is kept in run/failed/<event-id>.json so you can replay it by hand.
+#
+# Just before the agent starts in a world's clone, and while the world's lock is held, the handler brings that clone up
+# to date with the world (lib/refresh.py): fast-forward only, so it never makes a merge commit, never leaves conflict
+# markers and never overwrites a local change. It logs one "WORLD <address> clone <status>/<code>: <text>" line and ends
+# the prompt with a paragraph, in fixed wording, that says whether the clone is current. A direct message (no world) runs
+# no update. SDLCA_REFRESH_TIMEOUT (seconds for each git call, default 60) turns it off with 0. It never fails a turn.
+# The update runs before the credentials file is sourced, so provider keys are never in its environment.
+# The agent command is started with SDLCA_TURN_ACCOUNT set to this account's name, for tools that take an account as an
+# argument (sdlca-look refuses any account but this one inside a turn).
+# It is given the git address that sdlca-worlds recorded for the world, which lib/route.py reads from worlds.json (the last
+# field it prints): the update fetches from that address only and never asks the clone where the world is. A world with no
+# recorded address is not updated ("skipped/unverified"): run sdlca-worlds --apply to record it.
 # usage: sdlca-on-chat <account>
 set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 [ "$#" -eq 1 ] || die "usage: sdlca-on-chat <account>"
 load_account "$1"
+# The agent's tools learn whose turn this is from SDLCA_TURN_ACCOUNT (see where the agent starts, below). It is taken from the
+# argument, which load_account has just checked, and not from ACCOUNT: the account's env file and the credentials file are sourced
+# as shell, and either could change ACCOUNT.
+TURN_ACCOUNT="$1"
 EVENT="${SPAWN_EVENT:-$(cat)}"
 export -n EVENT # never exported, even if the caller's environment had an EVENT: the agent must not inherit other people's chat text
 # The Spawn client hands the handler the raw token in SPAWN_TOKEN. The agent never needs it (it uses
 # sdlca-api, which reads the token file), so it is removed before anything else runs.
 unset SPAWN_TOKEN SPAWN_EVENT
 
-KIND="" CURSOR="" EVENT_ID="" DECISION="" SENDER="" ADDR="" CWD="" LOCK=""
-IFS=$'\t' read -r KIND CURSOR EVENT_ID DECISION SENDER ADDR CWD LOCK \
+KIND="" CURSOR="" EVENT_ID="" DECISION="" SENDER="" ADDR="" CWD="" LOCK="" GIT=""
+IFS=$'\t' read -r KIND CURSOR EVENT_ID DECISION SENDER ADDR CWD LOCK GIT \
   < <(printf '%s' "$EVENT" | python3 -I -B "$SDLCA_CODE_DIR/lib/route.py" 2> /dev/null) || true
 if [ -z "$KIND" ]; then
   log_line "ERROR event could not be parsed; skipped"
@@ -81,6 +97,30 @@ if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then
   exit 0
 fi
 
+# The owner's presence commands (/spawn, /spawn ttl <seconds>, /leave) are done here by the kit, with no agent turn and no model:
+# the agent's body joins the world the message came from, or leaves. lib/command.py decides; only the owner can give one.
+COMMAND="$(printf '%s' "$EVENT" | OWNER="$OWNER" python3 -I -B "$SDLCA_CODE_DIR/lib/command.py" 2> /dev/null)" || COMMAND="-"
+case "$COMMAND" in
+  join\ [0-9]* | leave)
+    if [[ "$ADDR" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+      # Nothing the client prints is kept: a join can print credentials. It runs in the account's scratch folder, never in a clone.
+      ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 20 spawn client leave --name sdlca-presence > /dev/null 2>&1 < /dev/null ) || true
+      if [ "$COMMAND" = leave ]; then
+        log_line "PRESENCE left $ADDR (asked by $SENDER)"
+      elif ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 180 spawn client join "$ADDR" --name sdlca-presence --ttl "${COMMAND#join }" --render none > /dev/null 2>&1 < /dev/null ); then
+        log_line "PRESENCE joined $ADDR for ${COMMAND#join } seconds (asked by $SENDER)"
+      else
+        log_line "WARN PRESENCE the join to $ADDR did not work"
+      fi
+    else
+      log_line "WARN PRESENCE $COMMAND ignored: the message did not come from a world this account serves"
+    fi
+    [ "$EVENT_ID" = "-" ] || python3 -I -B "$SDLCA_CODE_DIR/lib/dedupe.py" add "$HANDLED" "$EVENT_ID" || true
+    cursor_advance "$CURSOR"
+    exit 0
+    ;;
+esac
+
 # Keep a failed or refused event so it can be replayed by hand:  SPAWN_EVENT="$(cat run/failed/<id>.json)" sdlca-on-chat <account>
 keep_event() {
   local name="${EVENT_ID}"
@@ -111,6 +151,39 @@ PROMPT="$(printf '%s' "$EVENT" | python3 -I -B "$SDLCA_CODE_DIR/lib/render_promp
   exit 1
 }
 
+# clone_note <status> <code> <address>
+# The paragraph that ends the prompt. The kit writes it with fixed wording chosen by the status and the code: git's own
+# text, or any other string that a remote can influence, is never put in a prompt. (It goes to the log only.)
+clone_note() {
+  local reason advice
+  case "$1" in
+    current | updated)
+      printf 'Clone status (written by the kit): the branch that is checked out in the clone of %s was brought up to date with the world just before this turn. Other branches and any submodules were not updated.' "$3"
+      return 0
+      ;;
+  esac
+  advice='If you build, run git fetch and then git rebase --fork-point origin/main before you push (a plain rebase can bring back commits that the world removed), and never force-push.'
+  case "$2" in
+    ahead) reason="it has commits that are not pushed yet" ;;
+    diverged) reason="the clone and the world each have commits the other lacks, or the world rewrote its history" ;;
+    detached | no-upstream) reason="it is not on a branch that follows the world" ;;
+    unverified) reason="its git address has not been recorded, so it was not updated; the person can run sdlca-worlds --apply" ;;
+    untrusted)
+      reason="its git settings were not trusted"
+      advice='Do not run git in this clone: tell the person that its git settings need a look.'
+      ;;
+    fetch) reason="the world could not be reached" ;;
+    timeout) reason="the update ran out of time" ;;
+    merge) reason="something in the clone stopped the fast-forward, so some files may be changed or half updated: check git status before you trust or commit them" ;;
+    not-git)
+      reason="the folder is not a git clone, or it is missing"
+      advice='Do not run git there: tell the person that the clone needs a look.'
+      ;;
+    *) reason="the update could not run" ;; # error
+  esac
+  printf 'Clone status (written by the kit): the clone of %s could NOT be brought up to date (%s). What you read in it may lag the latest push; say so in your reply. %s' "$3" "$reason" "$advice"
+}
+
 # One writer per world: turns for the same world queue on a lock (for at most SDLCA_LOCK_WAIT seconds).
 # A timeout stops a hung agent from holding the lock forever, and the agent does not inherit the lock's
 # file descriptor (9>&-), so a process it leaves running in the background cannot keep the lock.
@@ -121,8 +194,48 @@ status=0
   # looks again, so only one of them runs the agent.
   if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then exit 76; fi
   if [ -n "${SDLCA_CREDENTIALS_FILE:-}" ]; then
-    # Provider keys live in one file you already keep; the agent gets them without a second copy.
     [ -r "$SDLCA_CREDENTIALS_FILE" ] || { log_line "ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed"; exit 74; }
+  fi
+  # Bring the world's clone up to date before the agent reads it. This runs here, with the world's lock held, so it cannot
+  # race another turn in the same world. It is trusted code and the agent's tool limits do not apply to it, which is why it
+  # is lib/refresh.py and not an instruction in the prompt: the kit cannot tell a read-only agent from a building one.
+  # It runs BEFORE the credentials file is sourced: git, and every program git starts, never see the provider keys.
+  # The answer never fails the turn. A missing, crashed, stopped or confused refresh.py counts as failed/error or failed/timeout.
+  # SDLCA_REFRESH_TIMEOUT=0 (all zeros) turns it off here, so the switch does not depend on the file it switches off.
+  refresh_off=""
+  case "${SDLCA_REFRESH_TIMEOUT:-}" in "" | *[!0]*) ;; *) refresh_off=1 ;; esac
+  if [ "$ADDR" != "-" ] && [ -z "$refresh_off" ]; then
+    # refresh.py bounds each git call itself. This bounds the whole run (a hung update must not hold the world's lock for
+    # ever): four calls' worth, plus the ten minutes the fast-forward may take at least, plus a minute.
+    refresh_limit="${SDLCA_REFRESH_TIMEOUT:-60}"
+    [[ "$refresh_limit" =~ ^[0-9]{1,6}$ ]] || refresh_limit=60
+    refresh_limit=$((10#$refresh_limit))
+    [ "$refresh_limit" -le 86400 ] || refresh_limit=86400
+    refresh_cap=$((refresh_limit * 4 + 660))
+    refresh_rc=0
+    refresh_answer="$(timeout -k 5 "$refresh_cap" python3 -I -B "$SDLCA_CODE_DIR/lib/refresh.py" "$CWD" "${GIT:--}" 2>> "$ACC/handler.log" 9>&-)" || refresh_rc=$?
+    if [ "$refresh_rc" -eq 124 ] || [ "$refresh_rc" -eq 137 ]; then
+      refresh_answer="failed"$'\t'"timeout"$'\t'"the update was stopped by the handler after $refresh_cap seconds"
+    fi
+    refresh_status="" refresh_code="" refresh_text=""
+    case "$refresh_answer" in *$'\n'*) refresh_answer="" ;; esac # one line, or it is not an answer
+    # Exactly three tab-separated, non-empty fields, or it is not an answer. (read would merge empty fields.)
+    refresh_shape="^([a-z]+)"$'\t'"([a-z-]+)"$'\t'"([^"$'\t'"]+)\$"
+    if [[ "$refresh_answer" =~ $refresh_shape ]]; then
+      refresh_status="${BASH_REMATCH[1]}" refresh_code="${BASH_REMATCH[2]}" refresh_text="${BASH_REMATCH[3]}"
+    fi
+    case "$refresh_status/$refresh_code" in
+      current/ok | updated/ok | skipped/off | skipped/unverified | skipped/not-git | skipped/detached | skipped/no-upstream | skipped/ahead | skipped/diverged | skipped/untrusted | failed/fetch | failed/timeout | failed/merge | failed/error) ;;
+      *) refresh_status=failed refresh_code=error refresh_text="the update gave no usable answer" ;;
+    esac
+    refresh_text="${refresh_text//[[:cntrl:]]/ }"
+    if [ "$refresh_code" != off ]; then
+      log_line "WORLD $ADDR clone $refresh_status/$refresh_code: ${refresh_text:0:200}"
+      PROMPT="$PROMPT"$'\n\n'"$(clone_note "$refresh_status" "$refresh_code" "$ADDR")"
+    fi
+  fi
+  if [ -n "${SDLCA_CREDENTIALS_FILE:-}" ]; then
+    # Provider keys live in one file you already keep; the agent gets them without a second copy.
     set -a
     # shellcheck disable=SC1090
     . "$SDLCA_CREDENTIALS_FILE"
@@ -131,8 +244,11 @@ status=0
   # Never run the agent in the runtime home: it holds every account's token.
   cd "$CWD" 2> /dev/null || cd "$RUN/scratch/$ACCOUNT"
   agent_rc=0
+  # SDLCA_TURN_ACCOUNT tells the agent's tools whose turn this is. sdlca-look takes an account as an argument (the prompt hands the
+  # agent its name), so inside a turn it refuses any other one. It is set for the agent command only, and the account env file and
+  # the credentials file cannot override it, because an assignment on the command line comes last.
   printf '%s\n' "$PROMPT" |
-    timeout -k 10 "${SDLCA_AGENT_TIMEOUT:-1800}" bash -c "$SDLCA_AGENT_CMD" 9>&- >> "$ACC/handler.log" 2>&1 || agent_rc=$?
+    SDLCA_TURN_ACCOUNT="$TURN_ACCOUNT" timeout -k 10 "${SDLCA_AGENT_TIMEOUT:-1800}" bash -c "$SDLCA_AGENT_CMD" 9>&- >> "$ACC/handler.log" 2>&1 || agent_rc=$?
   if [ "$agent_rc" -ne 0 ]; then # (set -e does not apply here: this subshell runs inside an || list)
     case "$agent_rc" in 74 | 75 | 76) agent_rc=1 ;; esac # these three are this script's own codes (see the case below)
     exit "$agent_rc"

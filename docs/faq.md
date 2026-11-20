@@ -1,6 +1,6 @@
 # Frequently asked questions
 
-This page is for anyone with a quick question about the SDLCA agent kit. You will get a short answer and a link to the page that explains it in full. What it says about the kit's own behavior was checked against the kit's code on 2026-11-17. What it says about Spawn comes from the source named next to each statement.
+This page is for anyone with a quick question about the SDLCA agent kit. You will get a short answer and a link to the page that explains it in full. What it says about the kit's own behavior was checked against the kit's code on 2026-11-17, and what it says about the git address, `sdlca-look` and the Claude Code option on 2026-11-18. What it says about Spawn comes from the source named next to each statement.
 
 The kit is an unofficial community project. It is not made, reviewed or supported by Spawn. If your question is not here, ask in [Discussions](https://github.com/kdtix-open/sdlca-for-spawn/discussions) or see [SUPPORT.md](../SUPPORT.md) for where to ask what.
 
@@ -30,11 +30,11 @@ The kit is free software under Apache-2.0, and you pay for your own computer and
 
 ### Is my data sent anywhere?
 
-The kit sends no telemetry: it has no analytics and never contacts its maintainers. Spawn receives what the kit and Spawn's client send it, which is API calls (with the account's token), chat lines and git pushes. Your agent provider receives each prompt, which includes the chat line that started the turn and whatever the agent reads while it works. Tokens, logs and world clones stay on your machine, although `handler.log` holds whatever the agent prints, which can include other people's chat lines, and `run/failed` holds the raw event of any turn that failed (by default the kit deletes saved events that are more than 30 days old). See [Security model: privacy and retention](security-model.md#privacy-and-retention), and remember that replies appear in the room, where everyone can read them.
+The kit sends no telemetry: it has no analytics and never contacts its maintainers. Spawn receives what the kit and Spawn's client send it, which is API calls (with the account's token), chat lines, git fetches (the kit fetches the world's branch before each turn that came from the world's chat) and git pushes. Your agent provider receives each prompt, which includes the chat line that started the turn and whatever the agent reads while it works. Tokens, logs and world clones stay on your machine, although `handler.log` holds whatever the agent prints, which can include other people's chat lines, and `run/failed` holds the raw event of any turn that failed (by default the kit deletes saved events that are more than 30 days old). See [Security model: privacy and retention](security-model.md#privacy-and-retention), and remember that replies appear in the room, where everyone can read them.
 
 ### What can the agent do to my computer, and how do I limit it?
 
-The agent runs as your user on your machine, and the kit does not put it in a sandbox. What it can do depends on the agent command you choose, and the listener refuses to start until you choose one. The kit's three Claude Code examples are read-only (reads files and answers in chat), builder with a tool allowlist (edits files, runs git and Spawn commands, and can push changes that go live), and full autonomy (runs any command, only for a machine and an owner you fully trust). Start read-only, keep the sender list empty, and think about a separate Linux user or a virtual machine, because even the read-only choice can read any file your user can read, tokens included. See the [security model](security-model.md#what-the-agent-can-do-three-postures) and its [hardening checklist](security-model.md#hardening-checklist).
+The agent runs as your user on your machine, and the kit does not put it in a sandbox. What it can do depends on the agent command you choose, and the listener refuses to start until you choose one. The kit's four Claude Code examples are read-only (reads files and answers in chat), read-only with sight (the same, plus a screenshot of a world the account serves), builder with a tool allowlist (edits files, runs git and Spawn commands, and can push changes that go live), and full autonomy (runs any command, only for a machine and an owner you fully trust). Start read-only, keep the sender list empty, and think about a separate Linux user or a virtual machine, because even the read-only choice can read any file your user can read, tokens included. See the [security model](security-model.md#what-the-agent-can-do-the-postures) and its [hardening checklist](security-model.md#hardening-checklist).
 
 ### Who can give the agent orders?
 
@@ -49,6 +49,10 @@ To stop a listener, run `systemctl --user disable --now sdlca-listener@alice.ser
 ### Can the agent talk to Savi?
 
 No. Spawn says "Savi stays closed to every agent account, linked or not" ([Spawn's agent guide](https://www.spawn.co/llms-full.txt), read 2026-11-17), and a 403 answer called `agent_lane_closed` is final. The kit never tries to reach her. The agent's prompt says it cannot message Savi and tells it to end with an "Ask Savi:" line, so the person can pass the request on. See [rule 11 of the Spawn rules](compliance/spawn-rules.md#savi-and-unattended-work).
+
+### Can my agent have a body of its own?
+
+Yes, a body made from a picture of yours. Run `sdlca-body <account> <picture>` to see the plan, then again with `--apply`: it uploads the picture, has Spawn sculpt a rigged 3D body from it (the person the agent is linked to pays), waits, and wears it. See [Giving an agent a body](operations.md#giving-an-agent-a-body). The agent is not meant to run it, and the tool refuses inside an agent turn. A body shows only while the agent is in a world, and the kit's agent is there only while it takes a screenshot. A second agent can wear the same body for one join, but we could not yet make it the second agent's profile body without a sculpt of its own (see [Giving an agent a body, day zero and day n+1](giving-an-agent-a-body.md)). A face for the agent is planned and not built.
 
 ### Can I run it overnight or unattended?
 

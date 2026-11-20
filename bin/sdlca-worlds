@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Keep worlds.json and the local clones in step with the worlds a Spawn account can reach.
 
-usage: sdlca-worlds [--apply]
+usage: sdlca-worlds [--only <@owner/world>]... [--apply] [--as-person]
 
 Without --apply it only reports. With --apply it clones worlds you do not have yet, records every world
 in $SDLCA_SPAWN_HOME/worlds.json, and follows a rename: when a world keeps its id but changes its
@@ -10,11 +10,36 @@ address, the clone's remote is updated, the folder is moved to its new place and
 remembered as an alias. If an agent is working in the world at that moment, the move waits for a later
 run. Worlds are keyed by their immutable worldId, never by name.
 
+--only limits the run to the worlds you name (give it once for each world, with the address exactly as
+the dry run prints it, @owner/world or @@agent/world). Every other world the account can reach is left
+alone: not cloned, not recorded, not renamed. Use it with a personal token, which reaches every world its
+person can reach. If the account cannot reach a world you name, nothing is changed and the reachable
+addresses are listed.
+
+Each line says your standing in the world (owner, admin, editor or viewer). A viewer can read and clone but
+cannot push; only an admin can invite others to build.
+
+If the token belongs to a PERSON (a personal token, not an agent's own), a note says so. Clones made with it
+push as that person, and a chat listener cannot run on that account, so those worlds will not route chat for
+your agent. --apply then needs --as-person, to show you meant it. To give your agent a world, run this under
+the AGENT's account, after the agent has standing in the world (an invite or an approved ask to build).
+
 Each world records which accounts can reach it (that is what routes a chat event to the right clone).
 Each clone is made under $SDLCA_REPOS/<owner>/<world> with its own git credential helper, which reads
 this account's token file and is attached to Spawn's git host only; a clone that is missing is made
 again on the next run. Your global git configuration is not touched, and an existing clone of yours is
-never modified.
+never modified (recording an address, below, changes the registry only).
+
+Each world also records the git address that Spawn lists for it (the "git" field of its entry), if it is one
+the clone's credential helper can be attached to and the update can compare (lib/gitcred.py, recordable): https,
+with a host, no user information and no . or .. in the path. Any other address is not recorded (the line says so,
+without printing it), and one that was recorded before is removed. The address comes from Spawn's listing and
+never from the clone's own configuration. The update before each turn (lib/refresh.py) fetches from that address
+only and refuses a clone whose remote or credential helper disagrees with it, so a world without one is not
+updated ("skipped/unverified"). A world recorded before this field existed gets it on the next --apply; run it
+under the AGENT's account, with --only @owner/world to touch just one world. The record is one per world and not
+one per account: when the accounts that reach a world do not get the same address from Spawn, the account that
+runs --apply last decides, and the line says which other accounts share the record.
 
 Environment: SPAWN_TOKEN_FILE, SPAWN_USERNAME and ACCOUNT (all set by sdlca-as), SPAWN_ORIGIN (default
 https://www.spawn.co), SDLCA_SPAWN_HOME (default ~/.sdlca/spawn), SDLCA_REPOS (default ~/repos),
@@ -41,6 +66,20 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 ACCOUNT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63})?$")  # one word, or group/name
 
 
+def standing_note(world):
+    """' (standing: editor)' when Spawn says what the account is in this world; a viewer is told what that means."""
+    standing = world.get("standing")
+    if not isinstance(standing, str) or not re.fullmatch(r"[a-z]{1,16}", standing):
+        return ""
+    return " (standing: %s%s)" % (standing, ": can read and clone, cannot push" if standing == "viewer" else "")
+
+
+def listed_git(world):
+    """The git address Spawn lists for a world, as text ("" when it is missing or not text)."""
+    url = world.get("git")
+    return url if isinstance(url, str) else ""
+
+
 def git(*args, cwd=None, timeout=600):
     try:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
@@ -61,11 +100,34 @@ def try_world_lock(home, lock_name):
     return fd
 
 
+def parse_args(argv):
+    """(apply, [addresses given with --only], as_person); anything else is a usage error."""
+    apply, only, as_person, args = False, [], False, list(argv)
+    while args:
+        arg = args.pop(0)
+        if arg == "--apply":
+            apply = True
+        elif arg == "--as-person":
+            as_person = True
+        elif arg == "--only" and args:
+            only.append(args.pop(0))
+        elif arg.startswith("--only="):
+            only.append(arg.split("=", 1)[1])
+        else:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
+    for address in only:
+        match = ADDRESS.fullmatch(address)
+        if not match or any(name.startswith((".", "-")) for name in match.groups()):
+            sys.exit("sdlca-worlds: --only needs an address like @owner/world or @@agent/world, got %r" % address)
+    return apply, only, as_person
+
+
 def main(argv):
-    apply = "--apply" in argv
     if "-h" in argv or "--help" in argv:
         print(__doc__)
         return 0
+    apply, only, as_person = parse_args(argv)
     token_file = os.environ.get("SPAWN_TOKEN_FILE")
     username = os.environ.get("SPAWN_USERNAME", "")
     account = os.environ.get("ACCOUNT", "")
@@ -90,10 +152,33 @@ def main(argv):
     token = safeurl.read_token(token_file)
     request = urllib.request.Request(origin + "/api/agent/v1/me", headers={"Authorization": "Bearer " + token})
     try:
-        with safeurl.opener().open(request, timeout=30) as response:
+        with safeurl.opener(direct=origin.startswith("http://")).open(request, timeout=30) as response:  # a plain-http origin is this machine: never through a proxy
             me = json.load(response)
     except (urllib.error.URLError, OSError, ValueError) as error:
         sys.exit("sdlca-worlds: could not read the account's worlds: %s" % error)
+
+    if not isinstance(me, dict):
+        sys.exit("sdlca-worlds: Spawn's answer was not what this tool expects (nothing was changed)")
+    listed = me.get("worlds")
+    all_worlds = [w for w in listed if isinstance(w, dict)] if isinstance(listed, list) else []
+    if me.get("actorClass") == "human":
+        who = str(me.get("handle") or "@" + username)
+        print(prefix + "NOTE: this token signs in as a PERSON (%s), not as an agent. Clones made with it push as that person, and a chat listener "
+              "cannot run on this account, so these worlds will not route chat for your agent. To give your agent a world, run this under the "
+              "AGENT's account once the agent has standing in the world." % who)
+        if apply and not as_person:
+            sys.exit("sdlca-worlds: nothing was changed. If you really want clones that push as %s, run again with --as-person." % who)
+    if only:
+        reachable = {str(w.get("address", "")) for w in all_worlds}
+        missing = [address for address in only if address not in reachable]
+        if missing:
+            sys.exit("sdlca-worlds: this account cannot reach %s (nothing was changed). It can reach: %s" % (
+                ", ".join(missing), ", ".join(sorted(a for a in reachable if a)) or "no worlds"))
+        wanted = set(only)
+        selected = [w for w in all_worlds if str(w.get("address", "")) in wanted]
+        print(prefix + "--only: %d world(s) named; %d other world(s) this account can reach are left alone" % (len(selected), len(all_worlds) - len(selected)))
+    else:
+        selected = all_worlds
 
     registry_lock = None
     if apply:
@@ -106,18 +191,39 @@ def main(argv):
     if not isinstance(worlds, dict):
         worlds = registry["worlds"] = {}
 
-    def clone(world, path):
+    def clone(url, path):
         path.parent.mkdir(parents=True, exist_ok=True)
         config = []
-        for setting in gitcred.clone_config(world["git"], username, token_file):
+        for setting in gitcred.clone_config(url, username, token_file):
             config += ["--config", setting]
-        result = git("clone", *config, "--", world["git"], str(path))
+        result = git("clone", *config, "--", url, str(path))
         if result.returncode != 0:
             print("clone failed (it will be tried again next run): " + result.stderr.strip()[:200])
             return
         git("config", "user.name", git_name, cwd=path)
         git("config", "user.email", git_email, cwd=path)
         print("cloned")
+
+    def record_git(entry, world, git_url):
+        """Keep the entry's git address equal to the one Spawn lists for the world, when that is one the kit can hold a clone to (gitcred.recordable:
+        https, a host, no user information, no dot segment). Otherwise record none and drop one recorded before: the update before a turn holds
+        a clone to the recorded address, and a stale one is not an address to hold it to. The address comes only from Spawn's listing, never
+        from the clone. Only its host is ever printed (an address could hold anything). In a dry run the registry is never written, so the
+        same code reports what --apply would do. The record is one per world, so a change or a removal says which other accounts share it."""
+        old = entry.get("git")
+        listed = entry.get("accounts")
+        others = sorted({a for a in (listed if isinstance(listed, list) else []) if isinstance(a, str)} - {account})
+        shared = " (this record is shared with the accounts %s, whose updates it changes too)" % ", ".join(others) if others else ""
+        if gitcred.recordable(git_url):
+            if old != git_url:
+                print(prefix + "%s the git address of %s (host %s)%s" % ("recording" if old is None else "updating", world["address"], gitcred.parse_url(git_url).authority,
+                                                                         "" if old is None else shared))
+                entry["git"] = git_url
+            return
+        entry.pop("git", None)
+        why = "it has a . or .. segment in its path" if gitcred.credential_scope(git_url) else "it must be https, with a host and no user information"
+        print(prefix + "WARNING Spawn lists no git address for %s that the kit can hold a clone to (%s); none is recorded%s, so the update before a turn skips this world%s"
+              % (world["address"], why, " and the one recorded before is removed" if old is not None else "", shared if old is not None else ""))
 
     def move_clone(entry, old, new, lock_name):
         """Move a renamed world's folder, unless an agent is working in it right now."""
@@ -135,7 +241,7 @@ def main(argv):
         finally:
             os.close(fd)
 
-    for world in me.get("worlds", []):
+    for world in selected:
         match = ADDRESS.fullmatch(str(world.get("address", "")))
         world_id = world.get("worldId")
         if not match or not isinstance(world_id, str) or any(name.startswith((".", "-")) for name in match.groups()):
@@ -143,6 +249,7 @@ def main(argv):
             continue
         owner, slug = match.groups()
         path = repos / owner / slug
+        git_url = listed_git(world)
         entry = worlds.get(world_id)
         if entry is None:
             entry = worlds[world_id] = {
@@ -156,7 +263,9 @@ def main(argv):
                 "slack_channel_ids": [],
                 "standing": world.get("standing", ""),
             }
-            print(prefix + "new world %s -> %s" % (world["address"], path))
+            if gitcred.recordable(git_url):
+                entry["git"] = git_url
+            print(prefix + "new world %s -> %s%s" % (world["address"], path, standing_note(world)))
         else:
             entry["standing"] = world.get("standing", entry.get("standing", ""))
             if entry["address"] != world["address"]:
@@ -167,8 +276,12 @@ def main(argv):
                     old = Path(entry["clone_path"])
                     entry.update(owner=owner, slug=slug, address=world["address"])
                     if old.exists():
-                        if world.get("git"):
-                            git("remote", "set-url", "origin", world["git"], cwd=old)
+                        if gitcred.recordable(git_url):
+                            result = git("remote", "set-url", "origin", git_url, cwd=old)
+                            if result.returncode != 0:
+                                print("WARNING could not point the remote of the clone at %s to the new git address: %s" % (old, result.stderr.strip()[:200]))
+                        elif git_url:  # the clone's remote is not replaced by an address that the kit would not record (it could hold user information, or be http or ssh)
+                            print("WARNING the remote of the clone at %s was left as it was: the git address that Spawn lists for the renamed world is not one the kit uses" % old)
                         if old == path:
                             pass
                         elif path.exists():
@@ -178,14 +291,15 @@ def main(argv):
                     else:
                         entry["clone_path"] = str(path)
             else:
-                print(prefix + "ok %s (%s)" % (world["address"], entry["clone_path"]))
+                print(prefix + "ok %s (%s)%s" % (world["address"], entry["clone_path"], standing_note(world)))
                 pending = entry.get("pending_move")
                 if apply and isinstance(pending, dict) and Path(entry["clone_path"]).exists() and not path.exists():
                     move_clone(entry, Path(entry["clone_path"]), path, str(pending.get("lock", "")))
+        record_git(entry, world, git_url)
         if apply:
             entry["accounts"] = sorted(set(entry.get("accounts", [])) | {account})
-            if not Path(entry["clone_path"]).exists() and world.get("git"):
-                clone(world, Path(entry["clone_path"]))
+            if not Path(entry["clone_path"]).exists() and git_url:
+                clone(git_url, Path(entry["clone_path"]))
 
     if apply:
         tmp = registry_path.with_suffix(".json.tmp")

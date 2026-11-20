@@ -1,6 +1,6 @@
 # Several accounts and worlds
 
-This page is for someone who runs the SDLCA agent kit for more than one person or account, or who wants to know where the kit keeps its files and what happens to the local clones when a world is renamed, lost or moved. You will learn what an account is, how to keep several tokens together in a group, how the world registry and the clones work, and how to avoid the mistakes that are easy to make. It was checked against the kit's code on 2026-11-17.
+This page is for someone who runs the SDLCA agent kit for more than one person or account, or who wants to know where the kit keeps its files and what happens to the local clones when a world is renamed, lost or moved. You will learn what an account is, how to keep several tokens together in a group, how the world registry and the clones work, and how to avoid the mistakes that are easy to make. It was checked against the kit's code on 2026-11-17, and its parts about the git address and `sdlca-look` on 2026-11-18.
 
 The kit is an unofficial community project. It is not made, reviewed or supported by Spawn. For the first install, see [Getting started](getting-started.md). For the bigger picture, see [Architecture](architecture.md).
 
@@ -155,6 +155,7 @@ The clones live outside it, at `$SDLCA_REPOS/<world owner>/<world>`. [Clone path
       "owner": "alice",
       "slug": "game-1",
       "address": "@alice/game-1",
+      "git": "https://git.spawn.co/@alice/game-1.git",
       "clone_path": "/home/you/spawn-worlds/alice/game-1",
       "aliases": ["@alice/old-name"],
       "accounts": ["alice", "sdlca-for-spawn/bob"],
@@ -171,6 +172,7 @@ The clones live outside it, at `$SDLCA_REPOS/<world owner>/<world>`. [Clone path
 | `appId` | Spawn's app id for the world. Events name the world through it as well. |
 | `owner`, `slug` | The two parts of the address. The owner is the world's owner, which is not always an account's owner. For a world an agent made, `@@agent/world`, the owner is `agent`. |
 | `address` | The current address. |
+| `git` | The git address that Spawn's listing gave for the world the last time `sdlca-worlds --apply` visited it (the example above is only an illustration; the real one is whatever Spawn lists). The update before each turn (`lib/refresh.py`) fetches from this address and from no other, and refuses a clone whose remote or credential helper disagrees with it. It is recorded only when it is an https address with a host, no user information and no `.` or `..` segment in its path (the form the clone's credential helper can be attached to, and one that the update can compare). If Spawn lists none, or one that is not usable, the field is left out, and one recorded before is removed. There is one record per world, shared by every account in `accounts`: if the accounts that reach a world did not get the same address from Spawn, the one that ran `--apply` last decides, and the tool says which other accounts share the record when it changes or removes it. The field is optional: an entry without it is a world that was recorded before the field existed, or one with no usable address, and the update then says `unverified` and runs no git. It is always taken from Spawn's listing, never from the clone. |
 | `clone_path` | Where the clone lives. The agent starts here. |
 | `aliases` | Old addresses, added when the kit sees a rename. Events that still use one are routed to the world. |
 | `accounts` | The accounts that reach this world, by full name (`group/name` for a grouped account). This list decides which accounts the world is served to: an account is served a world only when its own full name is in the list (its `OWNER` is not consulted). Entries from older versions without the list fall back to comparing the owner part of the address with the account's `OWNER`. |
@@ -185,7 +187,12 @@ The clones live outside it, at `$SDLCA_REPOS/<world owner>/<world>`. [Clone path
 ```bash
 bin/sdlca-as alice bin/sdlca-worlds            # dry run: report only
 bin/sdlca-as alice bin/sdlca-worlds --apply    # clone, follow renames, save
+bin/sdlca-as alice bin/sdlca-worlds --only @bob/game --apply    # only the world you name
 ```
+
+A personal token reaches every world its person can reach, which can be many (and mostly other people's). Run the dry run first, then use `--only @owner/world` (once for each world, with the address exactly as the dry run prints it) so that only those worlds are cloned and recorded. Each line also says your standing in the world (owner, admin, editor or viewer): a viewer can read and clone but cannot push, and only an admin can invite others to build. Every other world is left alone: not cloned, not recorded, and not renamed even if it was renamed on Spawn. If the account cannot reach a world you name, nothing is changed and the reachable addresses are listed.
+
+Under a personal token (a person's own account, not an agent's) the tool prints a note, and `--apply` needs `--as-person`. Clones made with that token push as that person, and a chat listener cannot run on that account, so those worlds do not route chat for your agent: the registry lists the world only for the account that ran the tool, and an existing clone is never re-pointed to another account's token later. To give your agent a world, run the tool under the agent's own account, once the agent has standing in the world.
 
 It asks Spawn for the account's worlds (the `/api/agent/v1/me` call, with the account's token) and then, for each world:
 
@@ -193,17 +200,27 @@ It asks Spawn for the account's worlds (the `/api/agent/v1/me` call, with the ac
 2. Records it if it is new, with its clone path set to `$SDLCA_REPOS/<owner>/<world>`.
 3. Refreshes its `standing` if it is already known.
 4. Follows a rename if the world kept its id but changed its address (see [Renames](#renames)).
-5. With `--apply`, adds the account to the world's `accounts` list and makes the clone if its folder does not exist. The clone has a 600-second time limit. A failed clone is reported as `clone failed (it will be tried again next run)` and is tried again on every later `--apply`.
-6. With `--apply`, writes the file through a temporary file and a rename, with mode 0600.
+5. Records the git address that Spawn lists for the world (the `git` field), when it is one the clone's credential helper can be attached to and the update can compare (https, a host, no user information, no `.` or `..` in the path), and says `recording the git address of <world> (host <host>)` or `updating ...` when that changes the registry, and which other accounts share the record. It prints the host and never the address. If the listing has none, or an unusable one, it records none, removes one recorded before, and prints a `WARNING` that says the update before a turn will skip that world. Recording is a change to the registry only: the clone's files and settings are not touched for it. (A rename, in step 4, does move the clone's remote to the new address, but only when the new address is one that is recorded; for any other the remote is left as it was, and the tool says so.)
+6. With `--apply`, adds the account to the world's `accounts` list and makes the clone if its folder does not exist. The clone has a 600-second time limit. A failed clone is reported as `clone failed (it will be tried again next run)` and is tried again on every later `--apply`.
+7. With `--apply`, writes the file through a temporary file and a rename, with mode 0600.
 
-Without `--apply` nothing is written. The dry run prints lines such as `[dry-run] new world @alice/game-1 -> /home/you/spawn-worlds/alice/game-1`.
+Without `--apply` nothing is written. The dry run prints lines such as `[dry-run] new world @alice/game-1 -> /home/you/spawn-worlds/alice/game-1`, and `[dry-run] recording the git address of @alice/game-1 (host git.spawn.co)` for a world that was recorded before the field existed.
+
+**A world recorded before the `git` field existed.** Its entry has no address, so the update before a turn says `unverified` (see [Operations](operations.md#the-clone-was-not-brought-up-to-date)) and runs no git until it has one. Give it one by running the tool under the AGENT's account (the one whose clone it is):
+
+```bash
+bin/sdlca-as alice bin/sdlca-worlds --apply                         # every world that account reaches
+bin/sdlca-as alice bin/sdlca-worlds --apply --only @alice/game-1    # just one
+```
+
+Look at the dry run first. Recording an address changes only the registry. The tool does not check the clone's remote for it, and does not change it: if the clone's remote differs from what Spawn lists, the next update says `untrusted` and names both hosts, and you decide which one is right. The same run still does what `--apply` always does, so the dry run may also show `RENAMED` (the clone's remote is pointed at the new address and the folder is moved) or `new world` (a missing clone is made): read it before you run `--apply`.
 
 What it never does:
 
 - **It does not run by itself.** `sdlca-onboard` runs it once. After that, run it yourself whenever the account gains standing in a new world, and after a rename. Until you do, events about a new world are not matched and the agent starts in its scratch folder.
-- **It never deletes or changes a clone you already have,** except to move it for a rename.
+- **It never deletes a clone you already have, and never changes its files or settings,** except to point its remote at the new address and move it for a rename.
 - **It never removes a registry entry,** even when the account has lost access to the world. See [When standing is lost](#when-standing-is-lost).
-- **It never pulls or pushes.** The agent does that during a turn.
+- **It never pulls or pushes.** Before a turn that came from a world's own chat, the handler brings that world's clone up to date, by fast-forward only (see [Updating a clone before each turn](configuration.md#updating-a-clone-before-each-turn)), and the agent pushes during a turn.
 
 With `--apply`, it holds a lock on `worlds.json.lock` while it works, so two runs (or onboarding and a manual run) do not overwrite each other's registry. A rename's folder move does not pull the ground out from under an agent: if an agent holds that world's lock, the move waits. The entry gets a `pending_move` field, `sdlca-worlds` prints `WARNING an agent is working in ...`, and a later `--apply` moves the folder. A hand edit of `worlds.json` takes no lock, so make it only while nothing is running.
 
@@ -228,7 +245,7 @@ A clone lives at `$SDLCA_REPOS/<world owner>/<world>`. The default for `SDLCA_RE
 export SDLCA_REPOS="$HOME/spawn-worlds"
 ```
 
-This also gives you a way to adopt a clone you already made: put it at the expected path and the kit will use it as it is, without touching its remote, its identity or its credentials.
+This also gives you a way to adopt a clone you already made: put it at the expected path and the kit will use it as it is, without touching its remote, its identity or its credentials. The agent will work in it. But the update before a turn brings it up to date only when its remote is the address recorded for the world and it carries the kit's credential helper for that address (see [Operations](operations.md#the-clone-was-not-brought-up-to-date)); a clone that was made some other way is `untrusted` or fails to fetch until you make that so, or remove the clone and let `sdlca-worlds --apply` make it again.
 
 ## Credentials and identity in the clones
 
@@ -245,9 +262,9 @@ This also gives you a way to adopt a clone you already made: put it at the expec
 What follows from that:
 
 - **Your global git configuration is not touched** by any of this. One caveat: while `sdlca-onboard` runs Spawn's `spawn login`, Spawn's client adds a credential helper to the global configuration, and onboarding puts the earlier state back when it ends.
-- **The token is not copied into the clone.** The helper reads the token file when git runs, so a rotated token works in every clone with no change. The clone's configuration holds the file's path and the username.
+- **The token is not copied into the clone.** The helper reads the token file when git runs, so a rotated token works in every clone with no change. The clone's configuration holds the file's path and the username. The kit's own update before a turn (`lib/refresh.py`) fetches through this same helper, and it accepts only the exact form that `sdlca-worlds` writes, scoped to the origin of the world's recorded git address: if someone edits the helper in the clone's configuration, or scopes one to another host, the update is skipped as `untrusted` until the edit is undone.
 - **The helper is limited to the git host of the world's URL.** Git offers the token to that host and to no other. A remote, submodule or large-file URL on another host gets no credentials, and a world whose URL is not plain https gets no helper at all. A test checks this with `git credential fill`. The limit is on what git offers, not on who can read the token: an agent that can read the token file, or run arbitrary `git` commands (which can run other programs through configuration and aliases), can still reach it. See [Security model](security-model.md#residual-risks).
-- **A shared clone uses the credentials of the account that made it.** If two accounts reach one world, there is one clone, and its helper points at the token of whichever account ran `--apply` first. If that account loses standing, pushes from the clone fail even though the other account still has it. To switch, delete the clone (after checking for unpushed work) and run `--apply` under the account you want, or change the clone's `credential.helper` yourself.
+- **A shared clone uses the credentials of the account that made it.** If two accounts reach one world, there is one clone, and its helper points at the token of whichever account ran `--apply` first. If that account loses standing, pushes from the clone fail even though the other account still has it, and so does the update that the handler runs before each turn (it logs `failed/fetch`). To switch, delete the clone (after checking for unpushed work) and run `--apply` under the account you want, or change the clone's `credential.helper` yourself.
 - **The commit identity is set only on clones the kit makes.** An existing clone keeps its identity. Set `SDLCA_GIT_NAME` and `SDLCA_GIT_EMAIL` before the clone is made, or change one clone with `git -C <clone> config user.name ...`. The default address ends in `.invalid`, a reserved name that cannot receive mail. Choose your own if you want one that can.
 - **Deleting a clone deletes the commits you have not pushed.** Spawn's git remote keeps only what was pushed.
 
@@ -256,11 +273,11 @@ What follows from that:
 A world keeps its id when its name changes. When `sdlca-worlds` sees the same id with a new address, it prints `RENAMED <old> -> <new>`. With `--apply` it then:
 
 1. adds the old address to the world's `aliases`;
-2. points the clone's `origin` at the new git URL;
+2. points the clone's `origin` at the new git URL, and records the new git URL in the entry (`git`) in the same run. If git cannot update the remote (for example because the remote is not called `origin`), it prints a `WARNING`, still records what Spawn lists, and the update then refuses the clone as `untrusted` until its remote is put right;
 3. moves the clone's folder to `$SDLCA_REPOS/<new owner>/<new slug>`, if that folder does not exist and no agent is working in the world. If the new folder does exist, the kit leaves the clone where it was, prints a warning and keeps the old path. If an agent holds the world's lock, the entry gets `pending_move` and the folder moves on a later `--apply`;
 4. updates `owner`, `slug`, `address` and `clone_path` (the path changes when the folder moves).
 
-Until you run `--apply`, the old folder stays and the clone's remote may be out of date. Routing keeps working, because ids come first. The lock file name comes from the owner and the slug, so a renamed world gets a new lock file. The move first tries the world's lock, so it does not happen while an agent holds it.
+Until you run `--apply`, the old folder stays, and the clone's remote and the recorded git address are the old ones, so the update before each turn can log `failed/fetch` if Spawn no longer answers at the old address. Routing keeps working, because ids come first. The lock file name comes from the owner and the slug, so a renamed world gets a new lock file. The move first tries the world's lock, so it does not happen while an agent holds it.
 
 ## When standing is lost
 
@@ -269,7 +286,7 @@ An account's access to a world can end: a creator removes it from the crew, the 
 What the kit does about it: nothing, automatically. It does not watch for the unlink event, and `sdlca-worlds` never removes an entry. So:
 
 - A world that was lost stays in `worlds.json`, with the last `standing` it saw, and its clone stays on disk.
-- If events about it still arrive, they still route to the clone. Spawn refuses a `git push` from an account that cannot write to the world ([Spawn's agent guide](https://www.spawn.co/llms-full.txt), retrieved 2026-11-17), and it may refuse a `git pull` as well.
+- If events about it still arrive, they still route to the clone. Spawn refuses a `git push` from an account that cannot write to the world ([Spawn's agent guide](https://www.spawn.co/llms-full.txt), retrieved 2026-11-17), and it may refuse a `git pull` as well. The update that the handler makes before each turn then logs `failed/fetch`, the agent is told that the clone may lag the latest push, and the turn still runs.
 - A dry run of `sdlca-worlds` lists every world Spawn still shows to the account. A world that is missing from the list has been lost.
 
 To clean up, stop the listener, then:

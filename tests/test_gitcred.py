@@ -46,6 +46,78 @@ class CloneConfigTests(unittest.TestCase):
         self.assertIn("/tmp/odd dir/tok'en", out.stderr)  # cat was asked for exactly the odd path, as one argument
 
 
+class AddressTests(unittest.TestCase):
+    """One parser for a git address, and the one test of whether the clone's credential helper (and so a recorded address) may go with it."""
+
+    def test_a_plain_address_is_split_and_nothing_else_is_accepted(self):
+        url = gitcred.parse_url("HTTPS://Git.Spawn.CO:8443/@alice/game-1.git")
+        self.assertEqual((url.scheme, url.host, url.port, url.path, url.authority), ("https", "git.spawn.co", "8443", "/@alice/game-1.git", "Git.Spawn.CO:8443"))
+        self.assertEqual(gitcred.parse_url("https://git.spawn.co"), ("https", "git.spawn.co", "", "", "git.spawn.co"))
+        self.assertEqual(gitcred.parse_url("file:///tmp/world.git").path, "/tmp/world.git")
+        self.assertEqual(gitcred.parse_url("https://[::1]:8443/x").host, "[::1]")
+        for bad in ("https://" + "user:pw" + "@git.spawn.co/x", "https://user@git.spawn.co/x", "https://git.spawn.co@evil.example/x",  # check-secrets:allow
+                    "https://evil.example\\@git.spawn.co/x", "https://git.spawn.co/x?y", "https://git.spawn.co/x#y", "https://git.spawn.co/x y", "https://git.spawn.co/x\n",
+                    "https://git.spawn.co\t/x", "https://git.spawn.co:abc/x", "https://git.spawn.co:0/x", "https://git.spawn.co:65536/x", "https://git.spawn.co:/x",
+                    "https:///x", "https://-host/x", "https://.host/x", "https://exämple.com/x", "https://[::1/x", "file://:8443/x", "/tmp/x", "git@git.spawn.co:x", "x://",
+                    "", "x" * 3000, None, 5, ["https://git.spawn.co/x"], b"https://git.spawn.co/x"):
+            with self.subTest(bad=repr(bad)[:50]):
+                self.assertIsNone(gitcred.parse_url(bad))
+
+    def test_the_scope_of_the_helper_is_the_https_origin_as_written(self):
+        self.assertEqual(gitcred.credential_scope(SPAWN_GIT), "https://git.spawn.co")
+        self.assertEqual(gitcred.credential_scope("https://Git.Example.Invalid:8443/x.git"), "https://Git.Example.Invalid:8443")
+        self.assertEqual(gitcred.credential_scope("HTTPS://git.spawn.co"), "https://git.spawn.co")
+
+    def test_an_address_that_cannot_carry_the_helper_has_no_scope(self):
+        for url in ("file:///tmp/x.git", "/tmp/x.git", "http://git.spawn.co/x.git", "ssh://git@git.spawn.co/x.git", "https://user@git.spawn.co/x.git", "https:///x",
+                    "https://" + "user:pw" + "@git.spawn.co/x.git", "https://git.spawn.co:notaport/x.git", "https://git.spawn.co/x y.git", "https://git.spawn.co/x\n", "", None, 5):  # check-secrets:allow
+            with self.subTest(url=repr(url)):
+                self.assertIsNone(gitcred.credential_scope(url))
+
+    def test_the_helper_is_written_exactly_when_there_is_a_scope(self):
+        for url in (SPAWN_GIT, "https://git.example.invalid:8443/x.git", "file:///tmp/x.git", "http://git.spawn.co/x.git", "https://user@git.spawn.co/x.git",
+                    "https://git.spawn.co:notaport/x.git", "https://git.spawn.co/x y.git"):
+            config = gitcred.clone_config(url, "u", "/t")
+            self.assertEqual(len(config) == 4, gitcred.credential_scope(url) is not None, url)
+            self.assertEqual(config[0], "credential.helper=")
+            self.assertEqual(config[-1], "remote.origin.fetch=+refs/notes/*:refs/notes/*")
+
+
+    def test_the_length_limit_is_exact_and_a_backslash_in_the_path_is_refused(self):
+        base = "https://git.spawn.co/"
+        self.assertIsNotNone(gitcred.parse_url(base + "a" * (gitcred.URL_LIMIT - len(base))))  # 2048 characters: the longest that is looked at
+        self.assertIsNone(gitcred.parse_url(base + "a" * (gitcred.URL_LIMIT - len(base) + 1)))  # one more is not
+        self.assertIsNone(gitcred.parse_url("https://git.spawn.co/a\\b"))
+        self.assertIsNone(gitcred.parse_url("https://git.spawn.co\\a/b"))
+
+    def test_a_dot_segment_is_found_however_it_is_spelled(self):
+        for path in ("/a/../b", "/a/./b", "/..", "/.", "/a/..", "/a/%2e%2e/b", "/a/%2E%2E/b", "/a/%2e./b", "/a/.%2E/b", "/%2e", "/a/%2E", "/a/../", "/a/./.git"):
+            with self.subTest(path=path):
+                self.assertTrue(gitcred.has_dot_segment(path), path)
+        for path in ("", "/", "/@alice/game-1.git", "/a/.hidden/b", "/a/..b/c", "/a/b../c", "/a/...", "/a/.git", "/a/%2e%2ex", "/a/%252e%252e/b", "/@alice/a.b.git/"):
+            with self.subTest(path=path):
+                self.assertFalse(gitcred.has_dot_segment(path), path)
+
+    def test_the_two_programs_agree_on_what_is_recorded(self):
+        """sdlca-worlds records an address only when gitcred.recordable says so, and lib/refresh.py holds a clone only to one that
+        refresh.recorded_address accepts. Nothing recordable may be refused by the update (it would show up as "unverified" for no reason a person
+        could see), and an https address that the update refuses must not be recordable."""
+        import refresh
+        for url in (SPAWN_GIT, "https://git.spawn.co/a/../game-1.git", "https://git.spawn.co/a/%2e%2e/game-1.git", "https://git.spawn.co/./game-1.git",
+                    "https://Git.Spawn.CO:8443/@Alice/Game-1", "https://git.spawn.co", "https://git.spawn.co/", "https://[::1]:8443/x.git", "https://127.0.0.1/x.git",
+                    "http://git.spawn.co/x.git", "ssh://git@git.spawn.co/x.git", "file:///tmp/x.git", "https://user@git.spawn.co/x.git", "https:///x.git",
+                    "https://git.spawn.co/x.git?y", "https://git.spawn.co/x y", "", None, 5):
+            with self.subTest(url=repr(url)):
+                if gitcred.recordable(url):
+                    self.assertIsNotNone(refresh.recorded_address(url))
+                    self.assertIsNotNone(gitcred.credential_scope(url))
+                if gitcred.credential_scope(url) is not None and refresh.recorded_address(url) is None:
+                    self.assertFalse(gitcred.recordable(url))
+        self.assertTrue(gitcred.recordable(SPAWN_GIT))
+        self.assertFalse(gitcred.recordable("https://git.spawn.co/a/../game-1.git"))
+        self.assertIsNotNone(gitcred.credential_scope("https://git.spawn.co/a/../game-1.git"))  # the helper alone would have gone with it: that is the gap this closes
+
+
 class GitBehaviorTests(unittest.TestCase):
     """What git itself does with these settings (nothing here touches the network)."""
 

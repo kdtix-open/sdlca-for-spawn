@@ -26,7 +26,7 @@ body:
     id: command
     attributes:
       label: Agent command and permission mode
-      description: For example `claude -p --permission-mode acceptEdits` (no keys, please).
+      description: For example `claude -p --setting-sources user --permission-mode acceptEdits` (no keys, please).
     validations:
       required: true
   - type: textarea

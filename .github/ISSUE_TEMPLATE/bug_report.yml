@@ -46,7 +46,7 @@ body:
     id: agent-command
     attributes:
       label: Agent command
-      description: The tool in `SDLCA_AGENT_CMD`, without any keys (for example `claude -p`, `codex exec`). Leave blank if not relevant.
+      description: The tool in `SDLCA_AGENT_CMD`, without any keys (for example `claude -p --setting-sources user`, `codex exec`). Leave blank if not relevant.
   - type: textarea
     id: logs
     attributes:

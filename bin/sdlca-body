@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Give a Spawn agent a body (a rigged 3D character) made from a picture of your own, or put a body that already exists on it.
+# usage: sdlca-body <account> <picture> [--apply] [--wait <seconds>]
+#        sdlca-body <account> --job <jobId> [--apply] [--wait <seconds>]
+#        sdlca-body <account> --wear <address|look> [--apply]
+#        sdlca-body <account> --reset <characterId> [--apply]
+#        sdlca-body <account> --carry <file.glb> --world <@owner/world> [--apply] [--wait <seconds>]
+#
+# <account> is the kit account of the agent that gets the body (the name you give sdlca-as). It must be an AGENT's own account: a
+# person's is refused. To make a body from a picture the agent must be linked to a person, because that person pays for the sculpt.
+#
+# Without --apply nothing is made or changed. The tool checks the picture on this machine, only reads from Spawn (who the agent is
+# and, for --job, how that sculpt is doing), and prints what it would do. Run it that way first.
+#
+# A picture (PNG, JPEG or WebP, at most 4 MB; the file's own first bytes decide what it is, never its name) goes through four steps,
+# each a call to Spawn's published character doors:
+#   1. upload the picture as a draft (Spawn reviews it like any other upload);
+#   2. start the sculpt of a rigged 3D body from it (the step the linked person pays for);
+#   3. wait for the sculpt: it runs for minutes. The tool asks again every SDLCA_BODY_POLL seconds (1 to 300, default 10) and
+#      gives up waiting after --wait seconds (1 to 7200, default 900). The sculpt then keeps running at Spawn, and the tool prints
+#      the --job command that carries on, so it is never started a second time;
+#   4. wear it: the agent's profile then names the body, and every world the agent joins from then on dresses its player in it.
+# The picture is sent exactly as it is, under a fixed file name, so the name of the file and the folders it sits in are not sent.
+# The plan names embedded text or camera data in the picture, and any bytes after the end of the picture (a phone's "motion photo"
+# keeps a video there): they are sent along, and the tool does not remove them. Use only a picture you have the right to upload.
+#
+# A second paid sculpt is what this tool is built to prevent. A call that makes something is never repeated by the tool itself, and
+# just before the sculpt is asked for, the tool records it in body-sculpt.json in the account's folder. While that file exists, a
+# picture run for the account (a dry run too) refuses and says what to do: carry on with --job <id> when the id is known, or look
+# at your characters on spawn.co when it is not (the answer to the request was lost or unclear). The file is removed when the body is
+# worn or the sculpt failed; to start over on purpose, delete it. If the sculpt was asked for and the answer is unclear (a server
+# error, a dropped connection, Ctrl-C), the tool says so and leaves the file. Once the sculpt exists, every way the run can stop
+# (except the sculpt itself failing) prints the --job command, and Ctrl-C, a closed terminal and a stop signal do too.
+#
+# --job <jobId>    carry on with a sculpt that already started (the tool printed its id): wait for it, then wear it. Nothing is made again.
+# --wear <x>       wear a body that already exists, without making one: x is a look key from the agent's own list (the dry run prints
+#                  it) or a plain https address (letters, digits and . _ ~ : / - only). No sculpt is made. Spawn takes a look key, or the
+#                  address of a file that was carried to Spawn (see --carry). It refused the address printed after a sculpt, for a
+#                  second agent, as body_not_carried (tried on 2026-11-20). A dry run cannot ask Spawn; only --apply does.
+# --carry <f> --world <w>
+#                  carry a rigged glTF binary model (.glb, at most 25 MB; the file's own header decides, not its name) to Spawn through
+#                  the world w (@owner/world), where the agent must be an editor, an admin or the owner, and print the address Spawn
+#                  gives it, which --wear takes. A file up to 4.4 MB goes in one call. A bigger one goes by Spawn's road for large
+#                  files, in three calls: a request for a storage address, a PUT of the bytes to that address (another host, which
+#                  gets no token), and a call that tells the asset door where they are; that signed address is never printed. The file
+#                  is stored with that world's assets under a name that is its own hash, anyone who knows the address can fetch it, and
+#                  Spawn screens it. Carrying the same file again costs nothing, so it is safe to repeat; --wait also limits how long
+#                  the tool waits for Spawn to place a large file. To get the file of a sculpt: curl -L -o body.glb <its address>.
+# --reset <id>     take a body made by this tool off (character id as printed after the upload); the agent goes back to the default body.
+#
+# This is for the person who runs the kit, from their own shell. It spends the linked person's money and puts a picture on Spawn, so
+# it must never be on an agent's list of allowed commands; it also refuses to run inside an agent turn (sdlca-on-chat sets
+# SDLCA_TURN_ACCOUNT there), which is a net for a mistake and not a barrier against an agent that can run any command. The account's
+# token goes only to Spawn's own origin (SPAWN_ORIGIN, default https://www.spawn.co), never through a proxy for a plain-http origin,
+# and is taken out of everything the tool prints; a redirect is never followed. What Spawn answers is printed as plain text with
+# control characters removed. No call lasts longer than two minutes (the picture's upload, five), however slowly Spawn answers.
+#
+# Exit status: 0 done (or a dry run); 1 refused or failed; 2 wrong command line; 3 the wait ended before the sculpt did; 130 stopped
+# with Ctrl-C or a stop signal (a sculpt that had started keeps running at Spawn).
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+case "${1:-}" in
+  -h | --help) usage_header "$0"; exit 0 ;;
+esac
+[ "$#" -ge 2 ] || {
+  echo "sdlca-body: usage: sdlca-body <account> <picture> [--apply]   (try --help)" >&2
+  exit 2
+}
+[ -z "${SDLCA_TURN_ACCOUNT:-}" ] || die "an agent turn may not change a body: this is for the person who runs the kit, from their own shell"
+load_account "$1"
+shift
+exec python3 -I -B "$SDLCA_CODE_DIR/lib/body.py" "$@"
