@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Optional extensions: tools and MCP servers that an agent may use, kept outside the kit. The kit ships the framework only.
+#
+# usage: sdlca-ext scaffold <name> [--dir <parent folder>]   start a new extension from a template
+#        sdlca-ext validate <folder>                         check an extension before you install or share it
+#        sdlca-ext list [<account>]                          what is installed (and, with an account, what is on and which keys are set)
+#        sdlca-ext enable <account> <name>                   turn an installed extension on for one account
+#        sdlca-ext disable <account> <name>
+#        sdlca-ext allow <account>                           print the permission rules to paste into your SDLCA_AGENT_CMD
+#        sdlca-ext mcp-config <account> [--write [--force]]  print (or write) the account's MCP config for its enabled extensions
+#        sdlca-ext check <account> [<name>]                  run each extension's own check, with its keys
+#        sdlca-ext run <account> <name> -- <command> [args]  run one of the extension's commands with its keys, and only for that command
+#
+# An extension is a folder in $SDLCA_SPAWN_HOME/extensions/<name>/ (default ~/.sdlca/spawn/extensions) holding extension.json, README.md
+# and, optionally, prompt.md. Which extensions an account uses is listed in accounts/<account>/extensions, one name per line. The keys an
+# extension declares are read from accounts/<account>/credentials.d/<name>.env (mode 0600, NAME='value' lines, nothing is expanded);
+# a key that the manifest does not declare is never read. With "inject": "env" the handler puts them in the agent's environment; with
+# "inject": "wrapper" (the default) only `run` gives them to the one command, so the agent's own environment never holds them.
+#
+# Nothing here installs a program, runs an extension's own scripts or widens a permission. `allow` only prints. Inside an agent turn
+# only `run` works, only for the account of that turn, only for an enabled extension and only for the commands its manifest names.
+# Full guide: docs/extensions.md
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+usage_err() {
+  echo "sdlca-ext: usage: sdlca-ext <scaffold|validate|list|enable|disable|allow|mcp-config|check|run> ...   (try --help)" >&2
+  exit 2
+}
+
+case "${1:-}" in
+  -h | --help) usage_header "$0"; exit 0 ;;
+  "") usage_err ;;
+  scaffold | validate) ;;
+  list) if [ -n "${2:-}" ]; then load_account "$2"; fi ;;
+  enable | disable | allow | mcp-config | check | run | env)
+    [ "$#" -ge 2 ] || usage_err
+    load_account "$2"
+    ;;
+  *) usage_err ;;
+esac
+exec python3 -I -B "$SDLCA_CODE_DIR/lib/ext.py" "$@"

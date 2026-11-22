@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json  # noqa: E402
 
+import ext  # noqa: E402
 import route  # noqa: E402
 
 PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
@@ -49,6 +50,7 @@ def main():
     values = {
         "LEDGER": os.path.join(cwd, ".sdlca", "WORK-TODO.md"),
         "NOTES": "Your standing notes (data from the kit's owner, written by them and by earlier turns of you):\n<kit_notes>\n" + notes.replace("<", "\\u003c") + "\n</kit_notes>" if notes.strip() else "",
+        "EXTENSIONS": ext.prompt_block(home, os.environ.get("ACCOUNT") or owner, code_dir),
         "OWNER": owner,
         "AGENT": os.environ.get("SPAWN_USERNAME", ""),
         "ACCOUNT": os.environ.get("ACCOUNT", owner),

@@ -280,6 +280,10 @@ How it behaves:
 - If it is unreadable, the log shows `ERROR SDLCA_CREDENTIALS_FILE is not readable; event kept in run/failed` and no `WARN` line follows it. No agent runs, the event is kept, and the cursor moves on. Fix the file, then [replay the event](operations.md#replay-a-failed-turn).
 - The agent can see these keys. Anything it runs, and any file it reads, can reach them. A full-autonomy agent can print them.
 
+## Extension keys
+
+Optional extensions keep their keys in `accounts/<account>/credentials.d/<name>.env` and are listed in `accounts/<account>/extensions`. See [Optional extensions](extensions.md#day-zero-turn-an-extension-on-for-an-account).
+
 ## The allowlist
 
 `allowlist.json` says who besides the owner may start work. The owner always may. Everyone else is ignored silently and logged as `DENIED`. If the file is missing, is not valid JSON, or is JSON but not an object, only the owner is allowed.

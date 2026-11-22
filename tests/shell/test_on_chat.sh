@@ -162,6 +162,30 @@ check "no second warning for the same thing" bash -c "! grep -q 'WARN agent exit
 check "the event is kept" test -s "$SDLCA_SPAWN_HOME/run/failed/evt-c1.json"
 teardown
 
+echo "optional extensions: keys and prompt text reach the agent only as the manifest says"
+setup
+mkdir -p "$SDLCA_SPAWN_HOME/extensions/viaenv" "$SDLCA_SPAWN_HOME/extensions/viawrap" "$ACC/credentials.d"
+for n in viaenv viawrap; do
+  printf '# T\n\n## What leaves your machine\n\nNothing.\n\n## Costs\n\nFree.\n' > "$SDLCA_SPAWN_HOME/extensions/$n/README.md"
+done
+printf '{"name":"viaenv","version":"1.0.0","summary":"Env tool.","license":"Apache-2.0","inject":"env","commands":["envtool"],"credentials":[{"env":"ENV_EXT_KEY"}]}' > "$SDLCA_SPAWN_HOME/extensions/viaenv/extension.json"
+printf '{"name":"viawrap","version":"1.0.0","summary":"Wrapped tool.","license":"Apache-2.0","commands":["wraptool"],"credentials":[{"env":"WRAP_EXT_KEY"}]}' > "$SDLCA_SPAWN_HOME/extensions/viawrap/extension.json"
+printf "ENV_EXT_KEY='env-key-value'\n" > "$ACC/credentials.d/viaenv.env"
+printf "WRAP_EXT_KEY='wrap-key-value'\n" > "$ACC/credentials.d/viawrap.env"
+chmod 600 "$ACC"/credentials.d/*.env
+printf 'viaenv\nviawrap\n' > "$ACC/extensions"
+with_agent 'cat > "$SHIM_OUT/prompt.txt"; printf "%s|%s\n" "${ENV_EXT_KEY:-none}" "${WRAP_EXT_KEY:-none}" > "$SHIM_OUT/seen"'
+run "$(event chat_mention @alice ',"id":"evt-x1"')"
+check "an inject-env key is in the agent's environment" grep -q '^env-key-value|' "$SHIM_OUT/seen"
+check "a wrapper key is not" grep -q '|none$' "$SHIM_OUT/seen"
+check "the prompt names both extensions" bash -c "grep -q 'extension name=\"viaenv\"' '$SHIM_OUT/prompt.txt' && grep -q 'sdlca-ext run alice viawrap -- wraptool' '$SHIM_OUT/prompt.txt'"
+check "no key is in the prompt" bash -c "! grep -q 'key-value' '$SHIM_OUT/prompt.txt'"
+chmod 644 "$ACC/credentials.d/viaenv.env"
+run "$(event chat_mention @alice ',"id":"evt-x2"')"
+check "a key file that others can read stops the turn" grep -q 'extension is not valid or its key file is unsafe' "$ACC/handler.log"
+check "and the event is kept" test -s "$SDLCA_SPAWN_HOME/run/failed/evt-x2.json"
+teardown
+
 echo "a cap on runs per hour"
 setup
 with_agent 'cat > /dev/null; echo ran >> "$SHIM_OUT/count"'

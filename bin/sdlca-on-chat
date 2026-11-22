@@ -260,6 +260,14 @@ status=0
     . "$SDLCA_CREDENTIALS_FILE"
     set +a
   fi
+  # Optional extensions (see docs/extensions.md): only the keys an enabled extension declares, only for those that ask for inject "env",
+  # read by lib/ext.py (nothing is expanded) and put in the agent's environment as quoted export lines. A bad extension or a key file
+  # that others can read stops the turn the same way an unreadable SDLCA_CREDENTIALS_FILE does.
+  ext_env="$(python3 -I -B "$SDLCA_CODE_DIR/lib/ext.py" env "$ACCOUNT" 2>> "$ACC/handler.log")" || {
+    log_line "ERROR an enabled extension is not valid or its key file is unsafe (see above); event kept in run/failed"
+    exit 74
+  }
+  eval "$ext_env"
   # Never run the agent in the runtime home: it holds every account's token.
   cd "$CWD" 2> /dev/null || cd "$RUN/scratch/$ACCOUNT"
   ensure_ledger "$PWD"

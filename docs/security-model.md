@@ -133,6 +133,16 @@ What the tool does so that a mistake does not become harm:
 
 [`tests/test_body.py`](../tests/test_body.py) checks these against a stand-in Spawn, and [`tests/test_state_files.py`](../tests/test_state_files.py) checks the opener that sends the token (no kind of redirect is followed, and the proxy is ignored when asked), and `tests/test_say.py` and `tests/test_worlds.py` check that no proxy gets the token from those two tools.
 
+## Optional extensions
+
+`sdlca-ext` lets the owner add outside tools and MCP servers (see [Optional extensions](extensions.md)). What it guards, and what it cannot:
+
+- **Nothing widens by itself.** The kit prints the permission rules an extension implies and never edits `SDLCA_AGENT_CMD`. Turning an extension on changes the prompt and the keys, not what the agent's tool is allowed to run.
+- **Keys.** They live in `accounts/<account>/credentials.d/<name>.env` (mode 0600; a link, a file others can read, or a writable folder is refused). The file is parsed, never run as shell, and only the names the manifest declares are used. With `inject: wrapper` the agent's environment never holds them: `sdlca-ext run` gives them to one command, and inside a turn only to the commands the manifest names, for the turn's own account. With `inject: env` the agent can read them from its environment, so keep its permission rules narrow.
+- **What a manifest cannot say.** No secret in the file, no command that can run other programs or print the environment (`env`, `sh`, `python3`, `curl` and more), no unpinned `npx` package, no plain-http server, no header secret written out. This list is a guard and is not complete.
+- **Still true.** An allowed command or MCP server can do anything its own program can do with the keys it gets, and what it returns is untrusted data. The README of each extension must say what leaves your machine and what it costs; read it before you turn the extension on.
+- **The extension's text.** `prompt.md` and the summary go into the prompt inside tags, with `<` escaped, as data from the extension's author.
+
 ## A world's own settings can run code
 
 **The hole.** In print mode (`-p`) Claude Code skips the question that asks whether you trust a folder (`claude --help` says so). With its default settings it then loads the folder's own project settings: hooks in `.claude/settings.json`, and MCP servers declared in `.mcp.json`. The kit runs the agent inside a world's clone, and other people can push to a world, so someone who can build in a world can push a hook or a server that runs any command as your user. It runs before the agent's first tool call, so no allow rule, no deny rule and no posture applies to it. The read-only posture does not help.
