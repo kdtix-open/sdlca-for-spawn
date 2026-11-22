@@ -102,6 +102,8 @@ fi
 COMMAND="$(printf '%s' "$EVENT" | OWNER="$OWNER" python3 -I -B "$SDLCA_CODE_DIR/lib/command.py" 2> /dev/null)" || COMMAND="-"
 case "$COMMAND" in
   join\ [0-9]* | leave)
+    THEN=""
+    case "$COMMAND" in *\ then) THEN=1 COMMAND="${COMMAND% then}" ;; esac
     if [[ "$ADDR" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
       # Nothing the client prints is kept: a join can print credentials. It runs in the account's scratch folder, never in a clone.
       ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 20 spawn client leave --name sdlca-presence > /dev/null 2>&1 < /dev/null ) || true
@@ -115,10 +117,12 @@ case "$COMMAND" in
     else
       log_line "WARN PRESENCE $COMMAND ignored: the message did not come from a world this account serves"
     fi
-    [ "$EVENT_ID" = "-" ] || python3 -I -B "$SDLCA_CODE_DIR/lib/dedupe.py" add "$HANDLED" "$EVENT_ID" || true
-    cursor_advance "$CURSOR"
-    exit 0
-    ;;
+    if [ -z "$THEN" ]; then
+      [ "$EVENT_ID" = "-" ] || python3 -I -B "$SDLCA_CODE_DIR/lib/dedupe.py" add "$HANDLED" "$EVENT_ID" || true
+      cursor_advance "$CURSOR"
+      exit 0
+    fi
+    ;; # "/spawn ... then <request>": the body is in, and the message goes on to the agent below
 esac
 
 # Keep a failed or refused event so it can be replayed by hand:  SPAWN_EVENT="$(cat run/failed/<id>.json)" sdlca-on-chat <account>
@@ -184,6 +188,21 @@ clone_note() {
   printf 'Clone status (written by the kit): the clone of %s could NOT be brought up to date (%s). What you read in it may lag the latest push; say so in your reply. %s' "$3" "$reason" "$advice"
 }
 
+# ensure_ledger <folder>: each world (or the scratch folder) keeps its own ledger, <folder>/.sdlca/WORK-TODO.md, which git ignores, so the notes
+# of one world never reach another and are never pushed. This is trusted code writing into a folder the agent can write to, so it
+# refuses a link and writes nothing that exists.
+ensure_ledger() {
+  local dir="$1/.sdlca"
+  [ -d "$1" ] && [ ! -L "$1" ] || return 0
+  [ ! -L "$dir" ] || return 0
+  mkdir -p "$dir" 2> /dev/null || return 0
+  [ -L "$dir/WORK-TODO.md" ] || [ -e "$dir/WORK-TODO.md" ] || cp "$SDLCA_CODE_DIR/templates/WORK-TODO.md" "$dir/WORK-TODO.md" 2> /dev/null || true
+  if [ -d "$1/.git" ] && [ ! -L "$1/.git" ] && [ ! -L "$1/.git/info" ]; then
+    mkdir -p "$1/.git/info" 2> /dev/null || return 0
+    [ -L "$1/.git/info/exclude" ] || grep -qxF '/.sdlca/' "$1/.git/info/exclude" 2> /dev/null || printf '/.sdlca/\n' >> "$1/.git/info/exclude" 2> /dev/null || true
+  fi
+}
+
 # One writer per world: turns for the same world queue on a lock (for at most SDLCA_LOCK_WAIT seconds).
 # A timeout stops a hung agent from holding the lock forever, and the agent does not inherit the lock's
 # file descriptor (9>&-), so a process it leaves running in the background cannot keep the lock.
@@ -243,6 +262,7 @@ status=0
   fi
   # Never run the agent in the runtime home: it holds every account's token.
   cd "$CWD" 2> /dev/null || cd "$RUN/scratch/$ACCOUNT"
+  ensure_ledger "$PWD"
   agent_rc=0
   # SDLCA_TURN_ACCOUNT tells the agent's tools whose turn this is. sdlca-look takes an account as an argument (the prompt hands the
   # agent its name), so inside a turn it refuses any other one. It is set for the agent command only, and the account env file and

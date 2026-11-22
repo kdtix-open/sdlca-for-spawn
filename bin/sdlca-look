@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Join a world with a software-rendered eye, save one screenshot, and leave.
-# usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]
+# usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--yaw <degrees>] [--pitch <degrees>]
+# --yaw and --pitch aim the camera before the picture, to the look that 'spawn client where' prints (yaw in whole degrees, pitch from -80
+# to 80, 0 level, negative down). It takes the pointer lock like a player and moves the mouse, measuring the turn with `where` and
+# correcting it (lib/shot.mjs), and it takes the picture even if it could not reach the aim. Without them the camera stays as it stands.
 #        sdlca-look --check [account]
 # The camera starts facing yaw 0 (level) and does not turn toward objects yet.
 #
@@ -40,7 +43,7 @@ set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 
-USAGE="usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds]   or: sdlca-look --check [account]"
+USAGE="usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--yaw <degrees>] [--pitch <degrees>]   or: sdlca-look --check [account]"
 WORLD_RE='^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 # The client's line that gives the page (its label "page :", then http://127.0.0.1:<port>, then more text), cut down to the address.
 PAGE_SED='s#^[[:space:]]*page[[:space:]]*:[[:space:]]*(http://127\.0\.0\.1:[1-9][0-9]{0,4})([/[:space:]].*)?$#\1#p'
@@ -152,7 +155,21 @@ turn_guard "$1"
 load_account "$1"
 WORLD="$2"
 OUT="$3"
-WAIT="${4:-8}"
+shift 3
+WAIT=8 YAW="-" PITCH="-"
+if [ "$#" -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then WAIT="$1"; shift; fi
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || die "$USAGE"
+  case "$1" in
+    --yaw) YAW="$2" ;;
+    --pitch) PITCH="$2" ;;
+    *) die "$USAGE" ;;
+  esac
+  shift 2
+done
+[[ "$YAW" == - || "$YAW" =~ ^-?[0-9]{1,3}$ ]] || die "--yaw must be a whole number of degrees (as 'spawn client where' prints the look), for example 90"
+[[ "$PITCH" == - || "$PITCH" =~ ^-?[0-9]{1,2}$ ]] || die "--pitch must be a whole number of degrees from -80 to 80 (0 is level, negative is down)"
+{ [ "$PITCH" = - ] || { [ "$PITCH" -ge -80 ] && [ "$PITCH" -le 80 ]; }; } || die "--pitch must be from -80 to 80"
 [[ "$WAIT" =~ ^[0-9]+$ ]] || die "wait-seconds must be a whole number"
 [[ "$WORLD" =~ $WORLD_RE ]] || die "the world must look like @owner/world (an option or anything else is refused)"
 LIMIT="$(time_limit)" || die "SDLCA_LOOK_TIMEOUT must be a whole number of seconds from 1 to 3600 (the default is 240), not '${SDLCA_LOOK_TIMEOUT:-}'"
@@ -421,7 +438,7 @@ take_shot() {
   rm -f "$SHOT"
   SHOT_RC=0
   # The tool's own "saved <path>" line is not shown: its path is the private one. This tool says where the picture is, below.
-  run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" < /dev/null > /dev/null || SHOT_RC=$?
+  run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" "$YAW" "$PITCH" "$NAME" < /dev/null > /dev/null || SHOT_RC=$?
   SHOT_SIZE=0
   if [ "$SHOT_RC" -eq 0 ] && [ -f "$SHOT" ]; then SHOT_SIZE="$(wc -c < "$SHOT" | tr -d ' ')"; fi
 }

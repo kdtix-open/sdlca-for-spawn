@@ -830,4 +830,32 @@ TEXT="/spawn"; run "$(event chat_mention @carol ',"relatedGameId":"app-111"')"; 
 check "a stranger's /spawn does not join" bash -c "! grep -q 'client join' '$SHIM_LOG'"
 teardown
 
+echo "/spawn ... then <request> joins and also runs the agent"
+setup
+with_agent 'echo ran > "$SHIM_OUT/agent-ran"'
+TEXT="/spawn then look at me"; run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"; unset TEXT
+check "the body joined" grep -q "PRESENCE joined @alice/game-1" "$ACC/handler.log"
+check "and the agent ran as well" test -e "$SHIM_OUT/agent-ran"
+teardown
+
+echo "each world keeps its own ledger in its clone, ignored by git, and the standing notes are in the prompt"
+setup
+printf 'MY STANDING NOTE\n' > "$SDLCA_SPAWN_HOME/AGENTS.md"
+git init -q "$TMP/clones/alice/game-1"
+with_agent 'cat > "$SHIM_OUT/prompt.txt"'
+run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"
+check "the ledger was made in the clone" test -s "$TMP/clones/alice/game-1/.sdlca/WORK-TODO.md"
+check "git ignores it" grep -qxF '/.sdlca/' "$TMP/clones/alice/game-1/.git/info/exclude"
+check "the prompt names that ledger" grep -q "$TMP/clones/alice/game-1/.sdlca/WORK-TODO.md" "$SHIM_OUT/prompt.txt"
+check "the prompt carries the standing notes" grep -q "MY STANDING NOTE" "$SHIM_OUT/prompt.txt"
+check "the prompt does not send the agent to the runtime home" bash -c "! grep -q '$SDLCA_SPAWN_HOME/WORK-TODO.md' '$SHIM_OUT/prompt.txt'"
+teardown
+setup
+mkdir -p "$TMP/elsewhere"
+ln -s "$TMP/elsewhere" "$TMP/clones/alice/game-1/.sdlca"
+with_agent 'true'
+run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"
+check "a link where the ledger folder should be is not written through" test -z "$(ls -A "$TMP/elsewhere")"
+teardown
+
 finish

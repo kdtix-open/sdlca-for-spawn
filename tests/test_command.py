@@ -24,6 +24,11 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(run("@@alice_helper /spawn ttl 600"), "join 600")
         self.assertEqual(run("/SPAWN TTL 600"), "join 600")
         self.assertEqual(run("@@a /leave"), "leave")
+        self.assertEqual(run("@@a /spawn then look at me"), "join 3600 then")
+        self.assertEqual(run("/spawn ttl 600 then look at me in the room"), "join 600 then")
+        self.assertEqual(run("/spawn then"), "-")
+        self.assertEqual(run("/leave then look"), "-")
+        self.assertEqual(run("/spawn ttl 5 then look"), "-")
         self.assertEqual(run("/spawn", env={"SDLCA_PRESENCE_TTL": "900"}), "join 900")
         self.assertEqual(run("/spawn", env={"SDLCA_PRESENCE_TTL": "abc"}), "join 3600")
 

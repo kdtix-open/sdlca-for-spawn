@@ -38,7 +38,8 @@ class MainTests(unittest.TestCase):
         self.assertIn("World this message came from: @alice/g", out)
         self.assertIn("Working directory: /c/alice/g", out)
         self.assertIn("  @alice/g -> /c/alice/g", out)
-        self.assertIn(home + "/AGENTS.md", out)
+        self.assertIn("/.sdlca/WORK-TODO.md", out)
+        self.assertNotIn(home + "/WORK-TODO.md", out)
         self.assertIn(helpers.ROOT + "/bin/sdlca-say", out)
         self.assertNotIn("{{", out)
 

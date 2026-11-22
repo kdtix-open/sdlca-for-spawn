@@ -39,7 +39,16 @@ def main():
     template_path = override if os.path.isfile(override) else os.path.join(code_dir, "templates", "handler-prompt.md")
     with open(template_path, encoding="utf-8") as handle:
         template = handle.read()
+    cwd = (world.get("clone_path") if world else "") or os.path.join(home, "run", "scratch", account)
+    notes = ""
+    try:  # the standing notes are put in the prompt by this trusted code, so the agent never needs to read the runtime home
+        with open(os.path.join(home, "AGENTS.md"), encoding="utf-8", errors="replace") as handle:
+            notes = handle.read(8000)
+    except OSError:
+        pass
     values = {
+        "LEDGER": os.path.join(cwd, ".sdlca", "WORK-TODO.md"),
+        "NOTES": "Your standing notes (data from the kit's owner, written by them and by earlier turns of you):\n<kit_notes>\n" + notes.replace("<", "\\u003c") + "\n</kit_notes>" if notes.strip() else "",
         "OWNER": owner,
         "AGENT": os.environ.get("SPAWN_USERNAME", ""),
         "ACCOUNT": os.environ.get("ACCOUNT", owner),

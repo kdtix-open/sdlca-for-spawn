@@ -4,7 +4,7 @@
 
 usage: command.py  < event JSON      (environment: OWNER, and optionally SDLCA_PRESENCE_TTL)
 
-Prints exactly one line: "join <seconds>", "leave", or "-" (not a command). Only the account's OWNER can give one: a line from
+Prints exactly one line: "join <seconds>", "join <seconds> then" (join, then the agent also gets the message), "leave", or "-" (not a command). Only the account's OWNER can give one: a line from
 an allowed sender who is not the owner prints "-" and goes to the agent as before. Leading @mentions are dropped; the rest must be
 exactly the command, nothing more, so a longer sentence that happens to start with /spawn is never a command. /spawn alone stays for
 SDLCA_PRESENCE_TTL seconds (default 3600) because Spawn's client always has a time limit; /leave ends it sooner.
@@ -23,6 +23,14 @@ def parse(text, default_ttl):
     while words and HANDLE.fullmatch(words[0]):
         words.pop(0)
     words = [w.lower() for w in words]
+    # "/spawn [ttl N] then <request>": join first, then the request goes to the agent ("join N then").
+    if len(words) > 2 and words[0] == "/spawn" and "then" in words[1:4]:
+        head = words[: words.index("then")]
+        rest = words[words.index("then") + 1 :]
+        joined = parse(" ".join(head), default_ttl)
+        if rest and joined.startswith("join "):
+            return joined + " then"
+        return "-"
     if words == ["/leave"]:
         return "leave"
     if words == ["/spawn"]:

@@ -155,7 +155,7 @@ done
 : > "$SHIM_LOG"
 : > "$SHIM_LOG"
 look @alice/game-1 "$TMP/shot.png" > /dev/null 2>&1; check "with no wait given the screenshot waits 8 seconds" test $? -eq 0
-check "  as the screenshot tool is told" grep -Eq "^BUN: .*/shot\.png 8\$" "$SHIM_LOG"
+check "  as the screenshot tool is told" grep -Eq "^BUN: .*/shot\.png 8 - - look[0-9]+\$" "$SHIM_LOG"
 for wait in 18446744073709551617 00000000000000000008 99999; do
   : > "$SHIM_LOG"
   look @alice/game-1 "$TMP/shot.png" "$wait" > /dev/null 2>&1; rc=$?
@@ -165,7 +165,7 @@ done
 : > "$SHIM_LOG"
 look @alice/game-1 "$TMP/shot.png" 3 > "$TMP/stdout.txt" 2> "$TMP/stderr.txt"; check "a good call under /tmp works" test $? -eq 0
 check "  the client joined the world with software rendering" grep -q 'client join @alice/game-1 --render cpu' "$SHIM_LOG"
-check "  the screenshot tool got the page address, a file in a private folder of the look's own, and the wait" grep -Eq "^BUN: $KIT/lib/shot.mjs http://127.0.0.1:9222 ${TMPDIR:-/tmp}/sdlca-look\.[A-Za-z0-9]+/shot\.png 3\$" "$SHIM_LOG"
+check "  the screenshot tool got the page address, a file in a private folder of the look's own, and the wait" grep -Eq "^BUN: $KIT/lib/shot.mjs http://127.0.0.1:9222 ${TMPDIR:-/tmp}/sdlca-look\.[A-Za-z0-9]+/shot\.png 3 - - look[0-9]+\$" "$SHIM_LOG"
 check "  the picture it made is at the path that was asked for" grep -q 'stand-in picture' "$TMP/shot.png"
 check "  and the tool says where it is" test "$(cat "$TMP/stdout.txt")" = "saved $TMP/shot.png"
 check "  the client left again" grep -q 'client leave' "$SHIM_LOG"
@@ -763,6 +763,21 @@ for name in "my kit" 'a&b' 'a#b' 'a%b' 'a$b'; do
   check "  and says to move the kit to a plain path" grep -q 'Move the kit to a plain path' "$TMP/err"
   check "  and no unit was written" test ! -e "$HOME/.config/systemd/user/sdlca-listener@.service"
 done
+teardown
+
+echo "sdlca-look aims the camera only when asked, and checks the aim"
+setup
+KIT="$ROOT"
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/aim.png" 2 --yaw 90 --pitch -10 > /dev/null 2>&1; check "an aimed look works" test $? -eq 0
+check "  the screenshot tool got the aim and the session name" grep -Eq "^BUN: .*/shot\.png 2 90 -10 look[0-9]+\$" "$SHIM_LOG"
+for bad in "--yaw x" "--yaw 1000" "--pitch 90" "--pitch" "--turn 5" "--yaw 5 --yaw"; do
+  : > "$SHIM_LOG"
+  # shellcheck disable=SC2086
+  look @alice/game-1 "$TMP/aim2.png" $bad > /dev/null 2>&1; rc=$?
+  check "an odd aim ($bad) is refused before anything joins" bash -c "test $rc -ne 0 && ! grep -q 'client join' '$SHIM_LOG'"
+done
+
 teardown
 
 finish
