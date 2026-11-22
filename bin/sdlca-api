@@ -26,5 +26,9 @@ args=(-X "$METHOD")
 if [ -n "$BODY" ]; then
   args+=(-H 'content-type: application/json' --data-binary "$BODY")
 fi
-spawn_curl "${args[@]}" "$URL"
+api_t0="$(now_ms)"
+api_rc=0
+spawn_curl "${args[@]}" "$URL" || api_rc=$?
+trace api.call method="$METHOD" path="${TARGET%%\?*}" dur_ms=$(($(now_ms) - api_t0)) rc="$api_rc"
+[ "$api_rc" -eq 0 ] || exit "$api_rc"
 echo

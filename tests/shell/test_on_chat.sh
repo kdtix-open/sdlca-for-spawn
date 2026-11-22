@@ -186,6 +186,29 @@ check "a key file that others can read stops the turn" grep -q 'extension is not
 check "and the event is kept" test -s "$SDLCA_SPAWN_HOME/run/failed/evt-x2.json"
 teardown
 
+echo "every turn leaves a trace, and the agent's tools can join it"
+setup
+with_agent 'cat > /dev/null; printf "%s\n" "${SDLCA_TURN_ID:-none}" > "$SHIM_OUT/turnid"'
+run "$(event chat_mention @alice ',"id":"evt-tr1"')"
+check "the agent got a turn id" grep -Eq '^t[0-9]{10,16}-[0-9]+$' "$SHIM_OUT/turnid"
+TURN="$(cat "$SHIM_OUT/turnid")"
+check "the trace holds the turn's story in order" bash -c "grep -o '\"ev\":\"[a-z.]*\"' '$ACC/trace.jsonl' | tr '\n' ' ' | grep -q 'turn.start.*lock.acquired.*agent.start.*agent.end.*turn.end'"
+check "  every line carries that turn id" bash -c "! grep -v '\"turn\":\"$TURN\"' '$ACC/trace.jsonl' | grep -q ."
+check "  the agent's time is a number" grep -Eq '"ev":"agent.end","dur_ms":[0-9]+,"rc":0' "$ACC/trace.jsonl"
+check "  no chat text or token is in it" bash -c "! grep -q -E 'sak_|secret' '$ACC/trace.jsonl'"
+printf 'SDLCA_TURN_ID=forged-by-env\n' >> "$ACC/env"
+run "$(event chat_mention @alice ',"id":"evt-tr3"')"
+check "  the account env file cannot choose the turn id" grep -Eq '^t[0-9]{10,16}-[0-9]+$' "$SHIM_OUT/turnid"
+teardown
+
+echo "SDLCA_TRACE=0 writes no trace"
+setup
+with_agent 'cat > /dev/null'
+printf 'SDLCA_TRACE=0\n' >> "$ACC/env"
+run "$(event chat_mention @alice ',"id":"evt-tr2"')"
+check "no trace file" test ! -e "$ACC/trace.jsonl"
+teardown
+
 echo "a cap on runs per hour"
 setup
 with_agent 'cat > /dev/null; echo ran >> "$SHIM_OUT/count"'

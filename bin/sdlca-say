@@ -23,6 +23,7 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 import safeurl  # noqa: E402
+import sdlca_trace as trace  # noqa: E402
 from linesplit import chunk  # noqa: E402
 
 PAUSE_SECONDS = float(os.environ.get("SDLCA_SAY_PAUSE", "2.2"))  # seconds between lines; Spawn rate-limits chat
@@ -77,6 +78,7 @@ def post(opener, url, token, body):
 
 
 def main(argv):
+    started = time.time()
     args = argv[1:]
     mode = args[0] if args else ""
     if mode == "room" and len(args) == 5:
@@ -110,10 +112,13 @@ def main(argv):
             body = {"to": to, "text": line, "nonce": nonce}
         if reply_to != "-" and index == 0:
             body["replyTo"] = int(reply_to)
+        post_started = time.time()
         post(opener, origin + url_path, token, body)
+        trace.emit("say.line", n=index + 1, of=len(lines), dur_ms=(time.time() - post_started) * 1000)
         print("sent %d/%d" % (index + 1, len(lines)))
         if index < len(lines) - 1:
             time.sleep(PAUSE_SECONDS)
+    trace.emit("say.total", lines=len(lines), dur_ms=(time.time() - started) * 1000, paused_ms=PAUSE_SECONDS * 1000 * (len(lines) - 1))
 
 
 if __name__ == "__main__":

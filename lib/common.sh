@@ -114,3 +114,42 @@ usage_header() {
 log_line() {
   printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >> "$ACC/handler.log"
 }
+
+# now_ms: the time in milliseconds since 1970 (bash 5 keeps it in EPOCHREALTIME; older bash asks date).
+now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local t="${EPOCHREALTIME/[.,]/}"
+    printf '%s' "$((t / 1000))"
+  else
+    date +%s%3N
+  fi
+}
+
+# trace <event> [key=value ...]
+# Adds one line of JSON to the account's trace file ($ACC/trace.jsonl; SDLCA_TRACE=0 turns it off): when it happened (ts, ms), which turn
+# (SDLCA_TURN_ID, set by sdlca-on-chat and passed to the agent's tools), what happened (ev), and the facts given. A value that is a whole
+# number is written as a number, anything else as text with every character outside letters, digits and . _ : @ / - and space replaced by
+# an underscore, so a chat line, a token or a quote can never get into the file this way. It never fails its caller, and the file is
+# started again (the old one kept as trace.jsonl.1) when it passes 4 MB. `sdlca-trace` reads it: see docs/observability.md.
+trace() {
+  [ "${SDLCA_TRACE:-1}" != 0 ] && [ -n "${ACC:-}" ] || return 0
+  local file="$ACC/trace.jsonl" ev="${1:-}" line k v kv
+  shift || true
+  ev="${ev//[^A-Za-z0-9._-]/_}"
+  line="{\"ts\":$(now_ms),\"turn\":\"${SDLCA_TURN_ID:--}\",\"ev\":\"$ev\""
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    k="${k//[^A-Za-z0-9_]/_}"
+    if [[ "$v" =~ ^-?[0-9]{1,15}$ ]]; then
+      line+=",\"$k\":$v"
+    else
+      v="${v//[^A-Za-z0-9._:@\/ -]/_}"
+      line+=",\"$k\":\"${v:0:200}\""
+    fi
+  done
+  line+="}"
+  if [ -f "$file" ] && [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -gt 4194304 ]; then mv -f "$file" "$file.1" 2> /dev/null || true; fi
+  printf '%s\n' "$line" >> "$file" 2> /dev/null || true
+  return 0
+}

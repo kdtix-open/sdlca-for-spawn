@@ -1,0 +1,257 @@
+#!/usr/bin/env -S python3 -I -B
+# SPDX-License-Identifier: Apache-2.0
+"""Show where an agent's turns spent their time: the kit's trace, turn by turn, with hints for finding the cause of a slow one.
+
+usage: sdlca-trace <account> [--last <n>] [--turn <id>] [--json] [--transcripts [<folder>]]
+
+Reads the account's trace file (~/.sdlca/spawn/accounts/<account>/trace.jsonl, and trace.jsonl.1), which the handler and the agent's tools write
+(see docs/observability.md): when the turn started, how long it queued for the world's lock, how long the clone update took, how long the agent ran,
+and what the agent's tools did meanwhile (looks: join, each picture, placing, aiming; chat lines; API calls; uploads). Nothing in the file is a chat
+line, a token or a file's content. --last picks how many of the newest turns to show (default 5); --turn shows one by its id.
+
+--transcripts adds what the agent itself did, from Claude Code's own session files (default folder ~/.claude/projects, or SDLCA_AGENT_TRANSCRIPTS):
+for each turn, the time inside each tool and the time left for the model, found by matching the turn's start and end. Only times and tool names are
+read from those files: the text of a conversation is not looked at, and nothing from it is printed. It works only for an agent that is Claude Code.
+
+--json prints the same numbers as one JSON object per turn, for a script. The hints are rules of thumb, not a verdict: they name where to look.
+"""
+import collections
+import datetime
+import glob
+import json
+import os
+import re
+import sys
+
+ACCOUNT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63})?$")
+BLANK_PICTURE = 20000  # bytes: sdlca-look treats a smaller picture as "the world has not drawn yet"
+
+
+def load(path):
+    records = []
+    for name in (path + ".1", path):
+        try:
+            with open(name, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(record, dict) and isinstance(record.get("ts"), int) and isinstance(record.get("ev"), str):
+                        records.append(record)
+        except OSError:
+            pass
+    return records
+
+
+def group(records):
+    turns = collections.OrderedDict()
+    for record in sorted(records, key=lambda r: r["ts"]):
+        turns.setdefault(str(record.get("turn", "-")), []).append(record)
+    return turns
+
+
+def first(events, name):
+    return next((e for e in events if e["ev"] == name), None)
+
+
+def summarize(turn_id, events):
+    out = {"turn": turn_id, "events": len(events), "hints": []}
+    start = first(events, "turn.start")
+    end = first(events, "turn.end")
+    agent = first(events, "agent.end")
+    out["started"] = datetime.datetime.fromtimestamp((start or events[0])["ts"] / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    out["kind"] = (start or {}).get("kind", "")
+    out["world"] = (start or {}).get("world", "")
+    out["total_ms"] = (end or {}).get("total_ms")
+    out["lock_wait_ms"] = (first(events, "lock.acquired") or {}).get("wait_ms")
+    out["refresh_ms"] = (first(events, "refresh") or {}).get("dur_ms")
+    out["agent_ms"] = (agent or {}).get("dur_ms")
+    out["agent_rc"] = (agent or {}).get("rc")
+    out["agent_start_ts"] = (first(events, "agent.start") or {}).get("ts")
+    out["agent_end_ts"] = (agent or {}).get("ts")
+    spans = collections.OrderedDict()
+
+    def add(name, ms):
+        if isinstance(ms, int):
+            spans.setdefault(name, [0, 0])
+            spans[name][0] += 1
+            spans[name][1] += ms
+
+    looks = [e for e in events if e["ev"] == "look.end"]
+    for e in looks:
+        add("look (whole)", e.get("total_ms"))
+    for e in events:
+        if e["ev"] == "look.join":
+            add("  look: join the world", e.get("dur_ms"))
+        elif e["ev"] == "look.shot":
+            add("  look: picture attempts", e.get("dur_ms"))
+        elif e["ev"] == "shot.place":
+            add("    placing the body", e.get("dur_ms"))
+        elif e["ev"] == "shot.aim":
+            add("    aiming the camera", e.get("dur_ms"))
+        elif e["ev"] == "shot.wait":
+            add("    waiting for the world to draw", e.get("dur_ms"))
+        elif e["ev"] == "shot.screenshot":
+            add("    taking the picture", e.get("dur_ms"))
+        elif e["ev"] == "say.total":
+            add("chat (sdlca-say)", e.get("dur_ms"))
+        elif e["ev"] == "api.call":
+            add("API calls (sdlca-api)", e.get("dur_ms"))
+        elif e["ev"] == "asset.upload":
+            add("upload (sdlca-asset)", e.get("dur_ms"))
+    out["spans"] = {k: {"count": v[0], "ms": v[1]} for k, v in spans.items()}
+    shots = [e for e in events if e["ev"] == "look.shot"]
+    blank = [e for e in shots if e.get("rc") == 0 and isinstance(e.get("bytes"), int) and e["bytes"] < BLANK_PICTURE]
+    out["pictures"] = {"attempts": len(shots), "blank": len(blank), "failed": len([e for e in shots if e.get("rc") not in (0, None)])}
+    look_ms = sum(e.get("total_ms") or 0 for e in looks)
+    hints = out["hints"]
+    if out["agent_ms"] and look_ms >= 0.5 * out["agent_ms"]:
+        hints.append("looks are %d%% of the agent's time (%d look%s). A look joins the world cold each time and waits for the software renderer; "
+                     "a body that stays in the world would skip that." % (100 * look_ms // out["agent_ms"], len(looks), "" if len(looks) == 1 else "s"))
+    if len(looks) > 1:
+        hints.append("%d looks in one turn: each one cost a cold join. Fewer, better aimed looks (--spot) save most of the time." % len(looks))
+    if blank:
+        hints.append("%d picture attempt%s came back blank (the world had not drawn yet): a longer first wait or a faster renderer helps." % (len(blank), "" if len(blank) == 1 else "s"))
+    if isinstance(out["lock_wait_ms"], int) and out["lock_wait_ms"] > 10000:
+        hints.append("the turn waited %.0f s for the world's lock: another turn of this world was running." % (out["lock_wait_ms"] / 1000))
+    if isinstance(out["refresh_ms"], int) and out["refresh_ms"] > 5000:
+        hints.append("the clone update took %.0f s." % (out["refresh_ms"] / 1000))
+    paused = sum(e.get("paused_ms") or 0 for e in events if e["ev"] == "say.total")
+    if paused >= 4000:
+        hints.append("%.0f s of chat time was the deliberate pause between lines (Spawn rate-limits chat): fewer, shorter replies save it." % (paused / 1000))
+    far = [e for e in events if e["ev"] == "shot.place" and e.get("reached") == "unknown"]
+    if far:
+        hints.append("the body's position could not be read after placing it.")
+    if out["agent_rc"] not in (0, None):
+        hints.append("the agent ended with status %s (124 or 137 means it ran out of time)." % out["agent_rc"])
+    return out
+
+
+def transcripts_for(summary, root):
+    """Per-tool times and model time for the window of a turn, from Claude Code's session files. Only timestamps and tool names are read."""
+    lo, hi = summary.get("agent_start_ts"), summary.get("agent_end_ts")
+    if not (lo and hi):
+        return None
+    best = None
+    for path in glob.glob(os.path.join(root, "*", "*.jsonl")):
+        try:
+            if os.path.getmtime(path) * 1000 < lo - 60000:
+                continue
+            stamps, uses, done = [], {}, {}
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        entry = json.loads(line)
+                        when = datetime.datetime.fromisoformat(str(entry["timestamp"]).replace("Z", "+00:00")).timestamp() * 1000
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if not (lo - 5000 <= when <= hi + 5000) or entry.get("type") not in ("assistant", "user"):
+                        continue
+                    stamps.append(when)
+                    content = (entry.get("message") or {}).get("content")
+                    for block in content if isinstance(content, list) else []:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "tool_use":
+                            name = str(block.get("name"))
+                            command = str((block.get("input") or {}).get("command", "")) if name == "Bash" else ""
+                            hit = re.search(r"bin/(sdlca-[a-z]+)", command)
+                            label = "Bash: " + (hit.group(1) if hit else (command.split() or ["?"])[0][:20]) if name == "Bash" else name
+                            uses[block.get("id")] = (when, label)
+                        elif block.get("type") == "tool_result" and block.get("tool_use_id") in uses:
+                            done[block["tool_use_id"]] = when
+            if stamps and uses:
+                span = max(stamps) - min(stamps)
+                if best is None or span > best[0]:
+                    best = (span, uses, done)
+        except OSError:
+            continue
+    if best is None:
+        return None
+    span, uses, done = best
+    tools = collections.OrderedDict()
+    for ident, finished in done.items():
+        when, label = uses[ident]
+        tools.setdefault(label, [0, 0])
+        tools[label][0] += 1
+        tools[label][1] += int(finished - when)
+    inside = sum(v[1] for v in tools.values())
+    return {"span_ms": int(span), "inside_tools_ms": inside, "model_and_other_ms": max(0, int(span) - inside),
+            "tools": {k: {"count": v[0], "ms": v[1]} for k, v in sorted(tools.items(), key=lambda kv: -kv[1][1])}}
+
+
+def secs(ms):
+    return "-" if ms is None else ("%.1f s" % (ms / 1000))
+
+
+def show(summary):
+    print("turn %s   %s   %s %s" % (summary["turn"], summary["started"], summary["kind"], summary["world"]))
+    print("  total %s: lock wait %s, clone update %s, agent %s (status %s)" % (
+        secs(summary["total_ms"]), secs(summary["lock_wait_ms"]), secs(summary["refresh_ms"]), secs(summary["agent_ms"]), summary["agent_rc"]))
+    for name, value in summary["spans"].items():
+        share = ""
+        if summary["agent_ms"] and not name.startswith(" "):
+            share = "  (%d%% of the agent's time)" % (100 * value["ms"] // max(1, summary["agent_ms"]))
+        print("    %-34s %3d x %9s%s" % (name, value["count"], secs(value["ms"]), share))
+    pictures = summary["pictures"]
+    if pictures["attempts"]:
+        print("    pictures: %d attempts, %d blank, %d failed" % (pictures["attempts"], pictures["blank"], pictures["failed"]))
+    transcript = summary.get("transcript")
+    if transcript:
+        print("  the agent's own steps (Claude Code's session): %s long, %s inside tools, %s model and other" % (
+            secs(transcript["span_ms"]), secs(transcript["inside_tools_ms"]), secs(transcript["model_and_other_ms"])))
+        for name, value in list(transcript["tools"].items())[:8]:
+            print("    %-34s %3d x %9s" % (name, value["count"], secs(value["ms"])))
+    for hint in summary["hints"]:
+        print("  hint: " + hint)
+    print()
+
+
+def main(argv):
+    args = list(argv)
+    if not args or args[0] in ("-h", "--help"):
+        sys.stdout.write(__doc__)
+        return 0 if args else 2
+    account = args.pop(0)
+    last, only, as_json, transcripts = 5, None, False, None
+    while args:
+        flag = args.pop(0)
+        if flag == "--last" and args and args[0].isdigit() and 1 <= int(args[0]) <= 500:
+            last = int(args.pop(0))
+        elif flag == "--turn" and args and re.fullmatch(r"t[0-9]{10,16}-[0-9]{1,8}", args[0]):
+            only = args.pop(0)
+        elif flag == "--json":
+            as_json = True
+        elif flag == "--transcripts":
+            transcripts = args.pop(0) if args and not args[0].startswith("--") else os.environ.get("SDLCA_AGENT_TRANSCRIPTS") or os.path.expanduser("~/.claude/projects")
+        else:
+            sys.stderr.write("sdlca-trace: usage: sdlca-trace <account> [--last <n>] [--turn <id>] [--json] [--transcripts [<folder>]]\n")
+            return 2
+    if not ACCOUNT_RE.match(account):
+        sys.stderr.write("sdlca-trace: invalid account name\n")
+        return 2
+    home = os.environ.get("SDLCA_SPAWN_HOME") or os.path.expanduser("~/.sdlca/spawn")
+    path = os.path.join(home, "accounts", account, "trace.jsonl")
+    turns = group(load(path))
+    turns.pop("-", None)  # events outside any turn (a person's own run of a tool) are not a turn
+    if not turns:
+        sys.stderr.write("sdlca-trace: no turns in %s yet (a turn writes to it when the kit is up to date; SDLCA_TRACE=0 turns it off)\n" % path)
+        return 1
+    chosen = [(k, v) for k, v in turns.items() if k == only] if only else list(turns.items())[-last:]
+    if not chosen:
+        sys.stderr.write("sdlca-trace: no such turn\n")
+        return 1
+    for turn_id, events in chosen:
+        summary = summarize(turn_id, events)
+        if transcripts:
+            summary["transcript"] = transcripts_for(summary, transcripts)
+        if as_json:
+            print(json.dumps(summary, sort_keys=True))
+        else:
+            show(summary)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -394,6 +394,7 @@ cleanup() {
   if [ -n "${HAVE_LOCK:-}" ] && [ "$(cat "$LOCK/pid" 2> /dev/null)" = "$$" ]; then rm -rf "$LOCK"; fi
   cd / 2> /dev/null # not inside the folder that is removed next
   rm -rf "$WORK"
+  [ -z "${LOOK_T0:-}" ] || trace look.end total_ms=$(($(now_ms) - LOOK_T0)) rc="$rc"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -406,6 +407,7 @@ trap 'exit 129' HUP
 # in front of it, for up to the time limit, and then stops with a plain message. The lock is a folder that holds the owner's process id, so a
 # lock whose owner is gone is taken over; it is a folder and not an open file so that a browser left running cannot hold it. The time the
 # look waits does not count against its own limit.
+export SDLCA_TRACE_FILE="$ACC/trace.jsonl" # lib/shot.mjs adds its own steps (place, aim, picture) to the same file
 LOCK="$ACC/look.lock"
 HAVE_LOCK=
 acquire_lock() {
@@ -430,7 +432,10 @@ acquire_lock() {
     waited=$((waited + 2))
   done
 }
+LOCK_T0="$(now_ms)"
 acquire_lock
+LOOK_T0="$(now_ms)"
+trace look.start world="$WORLD" render="$RENDER" size="${WIDTH:-default}x${HEIGHT:-default}" at="$AT" face="$FACE" lock_wait_ms=$((LOOK_T0 - LOCK_T0))
 SECONDS=0
 
 # run_limited <seconds> <command...>: run it for at most that long. It runs in the background and is waited for, so that a signal
@@ -486,6 +491,7 @@ except OSError as error:
 SECONDS=0
 JOIN_RC=0
 run_limited "$(left)" bash -c "$JOIN_SH" _ "$WORLD" "$NAME" "$((LIMIT + 30))" "$WORK/page" "$PAGE_SED" "$RENDER" "$WIDTH" "$HEIGHT" || JOIN_RC=$?
+trace look.join dur_ms=$(($(now_ms) - LOOK_T0)) rc="$JOIN_RC"
 mapfile -t PAGES < <(sort -u "$WORK/page" 2> /dev/null || true)
 [ "${#PAGES[@]}" -ne 1 ] || CDP="${PAGES[0]}" # known now, so that the cleanup can look for what listens there
 case "$JOIN_RC" in
@@ -516,10 +522,13 @@ take_shot() {
   [ "$(left)" -ge "$cap" ] || cap="$(left)"
   rm -f "$SHOT"
   SHOT_RC=0
+  local shot_t0
+  shot_t0="$(now_ms)"
   # The tool's own "saved <path>" line is not shown: its path is the private one. This tool says where the picture is, below.
   run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" "$YAW" "$PITCH" "$NAME" "$AT" "$FACE" < /dev/null > /dev/null || SHOT_RC=$?
   SHOT_SIZE=0
   if [ "$SHOT_RC" -eq 0 ] && [ -f "$SHOT" ]; then SHOT_SIZE="$(wc -c < "$SHOT" | tr -d ' ')"; fi
+  trace look.shot dur_ms=$(($(now_ms) - shot_t0)) rc="$SHOT_RC" bytes="$SHOT_SIZE"
 }
 
 # pause <seconds>: wait, but never past the time limit. It waits the way run_limited does, so that a signal is handled at once.

@@ -150,6 +150,12 @@ case "$rate" in
 esac
 
 log_line "event sender=$SENDER world=$ADDR"
+# One id per turn, passed to the agent's tools so their spans land in the same story (docs/observability.md). Set here, after the account's
+# env file was read, so that file cannot choose it.
+SDLCA_TURN_ID="t$(now_ms)-$$"
+export SDLCA_TURN_ID
+TURN_T0="$(now_ms)"
+trace turn.start kind="$KIND" world="$ADDR" sender="$SENDER" event="$EVENT_ID"
 PROMPT="$(printf '%s' "$EVENT" | python3 -I -B "$SDLCA_CODE_DIR/lib/render_prompt.py")" || {
   log_line "ERROR the prompt could not be rendered; event left unhandled"
   exit 1
@@ -207,8 +213,10 @@ ensure_ledger() {
 # A timeout stops a hung agent from holding the lock forever, and the agent does not inherit the lock's
 # file descriptor (9>&-), so a process it leaves running in the background cannot keep the lock.
 status=0
+LOCK_T0="$(now_ms)"
 (
   flock -w "${SDLCA_LOCK_WAIT:-3600}" 9 || exit 75
+  trace lock.acquired wait_ms=$(($(now_ms) - LOCK_T0))
   # The same event can arrive twice at once (two listeners, a client retry). The copy that waited for the lock
   # looks again, so only one of them runs the agent.
   if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then exit 76; fi
@@ -232,6 +240,7 @@ status=0
     [ "$refresh_limit" -le 86400 ] || refresh_limit=86400
     refresh_cap=$((refresh_limit * 4 + 660))
     refresh_rc=0
+    refresh_t0="$(now_ms)"
     refresh_answer="$(timeout -k 5 "$refresh_cap" python3 -I -B "$SDLCA_CODE_DIR/lib/refresh.py" "$CWD" "${GIT:--}" 2>> "$ACC/handler.log" 9>&-)" || refresh_rc=$?
     if [ "$refresh_rc" -eq 124 ] || [ "$refresh_rc" -eq 137 ]; then
       refresh_answer="failed"$'\t'"timeout"$'\t'"the update was stopped by the handler after $refresh_cap seconds"
@@ -268,15 +277,19 @@ status=0
     exit 74
   }
   eval "$ext_env"
+  [ -z "${refresh_t0:-}" ] || trace refresh dur_ms=$(($(now_ms) - refresh_t0)) status="${refresh_answer%%$'\t'*}" rc="${refresh_rc:-0}"
   # Never run the agent in the runtime home: it holds every account's token.
   cd "$CWD" 2> /dev/null || cd "$RUN/scratch/$ACCOUNT"
   ensure_ledger "$PWD"
   agent_rc=0
+  agent_t0="$(now_ms)"
+  trace agent.start cwd_world="$ADDR"
   # SDLCA_TURN_ACCOUNT tells the agent's tools whose turn this is. sdlca-look takes an account as an argument (the prompt hands the
   # agent its name), so inside a turn it refuses any other one. It is set for the agent command only, and the account env file and
   # the credentials file cannot override it, because an assignment on the command line comes last.
   printf '%s\n' "$PROMPT" |
     SDLCA_TURN_ACCOUNT="$TURN_ACCOUNT" timeout -k 10 "${SDLCA_AGENT_TIMEOUT:-1800}" bash -c "$SDLCA_AGENT_CMD" 9>&- >> "$ACC/handler.log" 2>&1 || agent_rc=$?
+  trace agent.end dur_ms=$(($(now_ms) - agent_t0)) rc="$agent_rc"
   if [ "$agent_rc" -ne 0 ]; then # (set -e does not apply here: this subshell runs inside an || list)
     case "$agent_rc" in 74 | 75 | 76) agent_rc=1 ;; esac # these three are this script's own codes (see the case below)
     exit "$agent_rc"
@@ -287,6 +300,7 @@ status=0
   exit 0
 ) 9>> "$RUN/$LOCK.lock" || status=$? # append: never truncate what a link at that path points to
 
+trace turn.end total_ms=$(($(now_ms) - TURN_T0)) status="$status"
 case "$status" in
   0) ;;
   76)

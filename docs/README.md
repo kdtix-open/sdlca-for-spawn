@@ -10,6 +10,7 @@ The kit is an unofficial community project. It is not made, reviewed or supporte
 - [Configuration](configuration.md): settings, files and example agent commands.
 - [Operations](operations.md): logs, upgrades and troubleshooting.
 - [Optional extensions](extensions.md) and [a setup walkthrough for four tools](optional-tools.md): the framework for tools and MCP servers that live outside the kit.
+- [Observability](observability.md): where a turn spent its time, with `sdlca-trace`.
 - [Giving an agent a body](giving-an-agent-a-body.md): day zero and day n+1 for `sdlca-body`, with what worked and what did not.
 - [FAQ](faq.md): short answers.
 
@@ -76,6 +77,7 @@ The kit is an unofficial community project. It is not made, reviewed or supporte
 | [operations.md](operations.md) | Running the listener, logs, upgrades, replay, troubleshooting, rotating a token, backups and uninstalling. |
 | [extensions.md](extensions.md) | The extension framework: manifest, keys, `sdlca-ext`, writing one for the community. |
 | [optional-tools.md](optional-tools.md) | Setup walkthrough for Tripo, Customuse, Playwright MCP and Context7, and how to upgrade Playwright MCP. |
+| [observability.md](observability.md) | The trace file, `sdlca-trace`, and a root-cause routine for a slow turn. |
 | [giving-an-agent-a-body.md](giving-an-agent-a-body.md) | Two stories about `sdlca-body`: an agent's first body (day zero), and keeping, undoing and sharing it (day n+1). |
 | [architecture.md](architecture.md) | The parts, the life of one event, design decisions and what is deliberately not built. |
 | [multi-account-and-worlds.md](multi-account-and-worlds.md) | Several owners and accounts, the world registry, clones, renames and lost access. |

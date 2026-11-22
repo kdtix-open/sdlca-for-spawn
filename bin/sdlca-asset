@@ -35,4 +35,8 @@ fi
 load_account "$ACCOUNT_ARG"
 export SDLCA_ASSET_MODE=1
 # shellcheck disable=SC2086  # APPLY is either empty or one word
-exec python3 -I -B "$SDLCA_CODE_DIR/lib/body.py" --carry "$FILE" --world "$WORLD" $APPLY
+asset_t0="$(now_ms)"
+asset_rc=0
+python3 -I -B "$SDLCA_CODE_DIR/lib/body.py" --carry "$FILE" --world "$WORLD" $APPLY || asset_rc=$?
+trace asset.upload dur_ms=$(($(now_ms) - asset_t0)) rc="$asset_rc" bytes="$(stat -c %s -- "$FILE" 2> /dev/null || echo 0)" dry_run="${APPLY:+0}${APPLY:-1}"
+exit "$asset_rc"
