@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Join a world with a software-rendered eye, save one screenshot, and leave.
-# usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--yaw <degrees>] [--pitch <degrees>]
+# usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--at <x,y,z>] [--face <x,y,z>] [--yaw <degrees>] [--pitch <degrees>]
+# --at stands the body with its FEET at a world position (metres, as a Try Walk spot gives it; the den floor is y 24), and --face turns
+# the camera toward a world point (metres) from the eye, which is the feet plus 1.6 m. Placing uses the Spawn client's `exec`, a run that
+# saves nothing (no --persist): the body is moved in the room and nowhere else, and the position is read back with `where` before the
+# picture. A world's own script can still move the body again (its arrival hold), so the tool tries a few times, says what it reached
+# on stderr and takes the picture anyway. --yaw and --pitch override what --face works out. Without --at the body stays where it arrived.
 # --yaw and --pitch aim the camera before the picture, to the look that 'spawn client where' prints (yaw in whole degrees, pitch from -80
 # to 80, 0 level, negative down). It takes the pointer lock like a player and moves the mouse, measuring the turn with `where` and
 # correcting it (lib/shot.mjs), and it takes the picture even if it could not reach the aim. Without them the camera stays as it stands.
 #        sdlca-look --check [account]
-# The camera starts facing yaw 0 (level) and does not turn toward objects yet.
+# The camera starts facing yaw 0 (level). Yaw 0 faces -z in this engine's camera.
 #
 # What it refuses, before it joins anything:
 #   - A world this account does not serve. The address (or an old address of a renamed world, which is joined under its current
@@ -29,6 +34,8 @@
 # look did. So an address planted in other text (a player's name, a chat line) cannot point the screenshot at another program on
 # this machine, and a program that was already running is never attached to, nor stopped.
 # Nothing the client prints is shown or stored, because it can hold join credentials. Only the page address is kept.
+# SDLCA_LOOK_RENDER (cpu, the default, or gpu), SDLCA_LOOK_WIDTH and SDLCA_LOOK_HEIGHT (320 to 3840 by 180 to 2160) go to the client's join as
+# --render, --width and --height: a larger frame, or the graphics card, gives a sharper picture and takes longer or needs the card.
 # The software renderer draws nothing until the world has loaded, which can take a minute or more, so the first pictures are blank
 # (about 4 KB; a real scene is many times that). The first picture is taken after wait-seconds (default 8). While a picture is
 # blank (under 20000 bytes) this waits SDLCA_LOOK_POLL seconds (1 to 300, default 10) and takes another, until the time limit. When
@@ -43,7 +50,7 @@ set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
 
-USAGE="usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--yaw <degrees>] [--pitch <degrees>]   or: sdlca-look --check [account]"
+USAGE="usage: sdlca-look <account> <@owner/world> <out.png> [wait-seconds] [--at <x,y,z>] [--face <x,y,z>] [--yaw <degrees>] [--pitch <degrees>]   or: sdlca-look --check [account]"
 WORLD_RE='^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 # The client's line that gives the page (its label "page :", then http://127.0.0.1:<port>, then more text), cut down to the address.
 PAGE_SED='s#^[[:space:]]*page[[:space:]]*:[[:space:]]*(http://127\.0\.0\.1:[1-9][0-9]{0,4})([/[:space:]].*)?$#\1#p'
@@ -156,13 +163,15 @@ load_account "$1"
 WORLD="$2"
 OUT="$3"
 shift 3
-WAIT=8 YAW="-" PITCH="-"
+WAIT=8 YAW="-" PITCH="-" AT="-" FACE="-"
 if [ "$#" -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then WAIT="$1"; shift; fi
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || die "$USAGE"
   case "$1" in
     --yaw) YAW="$2" ;;
     --pitch) PITCH="$2" ;;
+    --at) AT="$2" ;;
+    --face) FACE="$2" ;;
     *) die "$USAGE" ;;
   esac
   shift 2
@@ -170,11 +179,20 @@ done
 [[ "$YAW" == - || "$YAW" =~ ^-?[0-9]{1,3}$ ]] || die "--yaw must be a whole number of degrees (as 'spawn client where' prints the look), for example 90"
 [[ "$PITCH" == - || "$PITCH" =~ ^-?[0-9]{1,2}$ ]] || die "--pitch must be a whole number of degrees from -80 to 80 (0 is level, negative is down)"
 { [ "$PITCH" = - ] || { [ "$PITCH" -ge -80 ] && [ "$PITCH" -le 80 ]; }; } || die "--pitch must be from -80 to 80"
+POINT_RE='^-?[0-9]{1,3}(\.[0-9]{1,3})?(,-?[0-9]{1,3}(\.[0-9]{1,3})?){2}$'
+[[ "$AT" == - || "$AT" =~ $POINT_RE ]] || die "--at must be three numbers in metres, x,y,z with no spaces, for example 0.6,24,-1.5 (each within 999)"
+[[ "$FACE" == - || "$FACE" =~ $POINT_RE ]] || die "--face must be three numbers in metres, x,y,z with no spaces, for example 0.6,25.3,-0.4 (each within 999)"
 [[ "$WAIT" =~ ^[0-9]+$ ]] || die "wait-seconds must be a whole number"
 [[ "$WORLD" =~ $WORLD_RE ]] || die "the world must look like @owner/world (an option or anything else is refused)"
 LIMIT="$(time_limit)" || die "SDLCA_LOOK_TIMEOUT must be a whole number of seconds from 1 to 3600 (the default is 240), not '${SDLCA_LOOK_TIMEOUT:-}'"
 { [ "${#WAIT}" -le 4 ] && [ "$((10#$WAIT))" -lt "$LIMIT" ]; } ||
   die "wait-seconds ($WAIT) must be less than the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT), which covers the join and the screenshot together"
+RENDER="${SDLCA_LOOK_RENDER:-cpu}"
+[[ "$RENDER" == cpu || "$RENDER" == gpu ]] || die "SDLCA_LOOK_RENDER must be cpu or gpu, not '$RENDER'"
+WIDTH="${SDLCA_LOOK_WIDTH:-}" HEIGHT="${SDLCA_LOOK_HEIGHT:-}"
+{ [ -z "$WIDTH" ] || { [[ "$WIDTH" =~ ^[0-9]{3,4}$ ]] && [ "$WIDTH" -ge 320 ] && [ "$WIDTH" -le 3840 ]; }; } || die "SDLCA_LOOK_WIDTH must be a whole number of pixels from 320 to 3840"
+{ [ -z "$HEIGHT" ] || { [[ "$HEIGHT" =~ ^[0-9]{3,4}$ ]] && [ "$HEIGHT" -ge 180 ] && [ "$HEIGHT" -le 2160 ]; }; } || die "SDLCA_LOOK_HEIGHT must be a whole number of pixels from 180 to 2160"
+[ -n "$WIDTH" ] || [ -z "$HEIGHT" ] || die "set SDLCA_LOOK_WIDTH together with SDLCA_LOOK_HEIGHT"
 POLL="$(look_seconds SDLCA_LOOK_POLL 10 1 300)" || die "SDLCA_LOOK_POLL must be a whole number of seconds from 1 to 300 (the default is 10), not '${SDLCA_LOOK_POLL:-}'"
 SETTLE="$(look_seconds SDLCA_LOOK_SETTLE 20 0 300)" || die "SDLCA_LOOK_SETTLE must be a whole number of seconds from 0 to 300 (the default is 20), not '${SDLCA_LOOK_SETTLE:-}'"
 # The world must be one this account serves (lib/route.py has the rule that routes chat events too). An old address of a renamed
@@ -373,7 +391,7 @@ left() { printf '%s' "$((LIMIT - SECONDS))"; }
 # line and then stays alive is stopped when the time is up, and a buffered sed would be killed with the line unwritten, so the browser
 # that the join started could not be found and stopped.
 # shellcheck disable=SC2016  # the single quotes are deliberate: the inner shell expands its own arguments
-JOIN_SH='spawn client join "$1" --render cpu --name "$2" --ttl "$3" 2>&1 < /dev/null | sed -u -n -E "$5" > "$4"; exit "${PIPESTATUS[0]}"'
+JOIN_SH='spawn client join "$1" --render "$6" ${7:+--width "$7"} ${8:+--height "$8"} --name "$2" --ttl "$3" 2>&1 < /dev/null | sed -u -n -E "$5" > "$4"; exit "${PIPESTATUS[0]}"'
 
 # place_shot: put the finished picture at $OUT as a NEW file. The picture was made inside $WORK, which only this user can enter, and
 # not at $OUT, because a look takes seconds to minutes and the path is in a shared place (/tmp): a link planted there meanwhile would
@@ -406,7 +424,7 @@ except OSError as error:
 
 SECONDS=0
 JOIN_RC=0
-run_limited "$(left)" bash -c "$JOIN_SH" _ "$WORLD" "$NAME" "$((LIMIT + 30))" "$WORK/page" "$PAGE_SED" || JOIN_RC=$?
+run_limited "$(left)" bash -c "$JOIN_SH" _ "$WORLD" "$NAME" "$((LIMIT + 30))" "$WORK/page" "$PAGE_SED" "$RENDER" "$WIDTH" "$HEIGHT" || JOIN_RC=$?
 mapfile -t PAGES < <(sort -u "$WORK/page" 2> /dev/null || true)
 [ "${#PAGES[@]}" -ne 1 ] || CDP="${PAGES[0]}" # known now, so that the cleanup can look for what listens there
 case "$JOIN_RC" in
@@ -438,7 +456,7 @@ take_shot() {
   rm -f "$SHOT"
   SHOT_RC=0
   # The tool's own "saved <path>" line is not shown: its path is the private one. This tool says where the picture is, below.
-  run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" "$YAW" "$PITCH" "$NAME" < /dev/null > /dev/null || SHOT_RC=$?
+  run_limited "$cap" bun "$SDLCA_CODE_DIR/lib/shot.mjs" "$CDP" "$SHOT" "$1" "$YAW" "$PITCH" "$NAME" "$AT" "$FACE" < /dev/null > /dev/null || SHOT_RC=$?
   SHOT_SIZE=0
   if [ "$SHOT_RC" -eq 0 ] && [ -f "$SHOT" ]; then SHOT_SIZE="$(wc -c < "$SHOT" | tr -d ' ')"; fi
 }

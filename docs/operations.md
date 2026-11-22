@@ -495,6 +495,17 @@ This does not delete the agent account on Spawn. That is done in Spawn.
 
 The owner can mention the agent with `/spawn` (stays for `SDLCA_PRESENCE_TTL` seconds, 3600 by default), `/spawn ttl 600` (10 to 14400 seconds) or `/leave`. The handler runs `spawn client join <the world the message came from> --render none` itself, so no agent turn is started, and a second `/spawn` replaces the first. Only the owner's line counts, and only when it is exactly the command. It needs a world the account serves (a direct message has none). The log has a `PRESENCE` line; the client's own output is thrown away because a join can print a credential. Spawn's client always has a time limit, which is why `/spawn` alone is not forever.
 
+## Looking from a place
+
+`sdlca-look <account> <@owner/world> <out.png> [wait] --at <x,y,z> --face <x,y,z>` stands the agent's body with its feet at a world position and turns its camera toward a world point, then takes the picture. This is what a world's own spots give: a Try Walk spot is where a tester's feet stand, and its "what to look at" is the point to face. Without `--at` the body stays where it arrived; `--yaw` and `--pitch` override what `--face` works out. Facts from real runs on 2026-11-22:
+
+- Positions are world metres. The eye is 1.6 m above the feet. Yaw 0 faces -z (so to look toward +z, yaw is 180), positive pitch looks up.
+- The move is a run of the client's `exec` that saves nothing. The body is moved in that room only, and the position is read back with `where`. The world's colliders can move it: asked for (0.6, 24, -1.5), the body stood at about (0.2, 24, -1.3). The tool says where it ended on stderr, and `--face` is worked out from where it really stands.
+- The look turns with mouse moves, which cannot go further than the page is wide, so one sweep turns about 170 degrees. The tool starts at the edge that the turn leads away from.
+- **Sharper pictures.** The client draws frames of 640 x 360 unless told otherwise, and the picture is a blown-up copy of that. Set `SDLCA_LOOK_WIDTH=1280` and `SDLCA_LOOK_HEIGHT=720` in the account's `env` (3840 x 2160 at most) and the look is drawn at that size: on 2026-11-22 the den's box, window, fireplace and the twin were readable at 1280 x 720, where the default showed one blurred slab. It takes longer, so also set `SDLCA_LOOK_TIMEOUT=480` and give the look a first wait of 60. `SDLCA_LOOK_RENDER=gpu` asks the client for the graphics card; on this WSL machine every picture came back blank with it, so cpu stays the default.
+- The software renderer needs a long time to draw a world. If a look runs out of time, give it a longer first wait (for example `60`) and `SDLCA_LOOK_TIMEOUT=420`.
+- The first look into a world after a join starts at the world's own arrival camera, which in `@lanthief/game-1` points away from the den's box. A look that does not say where to stand and what to face shows that arrival view.
+
 ## Giving an agent a body
 
 This section is the short version. [Giving an agent a body: day zero and day n+1](giving-an-agent-a-body.md) tells it as two stories, with the output you will see.
