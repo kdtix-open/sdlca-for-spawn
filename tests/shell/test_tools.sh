@@ -789,6 +789,39 @@ for bad in "SDLCA_LOOK_RENDER=metal" "SDLCA_LOOK_WIDTH=100 SDLCA_LOOK_HEIGHT=720
   env $bad "$ROOT/bin/sdlca-look" alice @alice/game-1 "$TMP/hd2.png" 2 > /dev/null 2>&1; rc=$?
   check "an odd render setting ($bad) is refused before anything joins" bash -c "test $rc -ne 0 && ! grep -q 'client join' '$SHIM_LOG'"
 done
+echo "  one look at a time per account"
+mkdir -p "$ACC"
+sleep 30 & HOLDER=$!
+mkdir "$ACC/look.lock"; printf '%s\n' "$HOLDER" > "$ACC/look.lock/pid"
+: > "$SHIM_LOG"
+SDLCA_LOOK_TIMEOUT=4 look @alice/game-1 "$TMP/lock1.png" 1 > "$TMP/stdout.txt" 2> "$TMP/stderr.txt"; rc=$?
+check "a look waits for a running one and then says so plainly" bash -c "test $rc -ne 0 && grep -q 'another look by this account is still running' '$TMP/stderr.txt' && ! grep -q 'client join' '$SHIM_LOG'"
+check "  and leaves the other look's lock alone" test -d "$ACC/look.lock"
+kill "$HOLDER" 2> /dev/null; wait "$HOLDER" 2> /dev/null
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/lock2.png" 1 > /dev/null 2>&1; check "a lock whose owner is gone is taken over" test $? -eq 0
+check "  and a finished look removes its lock" test ! -e "$ACC/look.lock"
+echo "  --spot takes the stand point and the face point from a card file"
+printf '%s' '{"status":"doing","spots":[{"x":1,"y":24,"z":2,"n":"no face here"},{"x":0.8,"y":24,"z":-1.6,"face":{"x":0.6,"y":25.3,"z":-0.36},"n":"box"}]}' > "$TMP/card.json"
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/spot.png" 2 --spot "$TMP/card.json" > /dev/null 2>&1; check "a look from a card's spot works" test $? -eq 0
+check "  the first spot with a face gave both points" grep -Eq "^BUN: .*/shot\.png 2 - - look[0-9]+ 0\.800,24\.000,-1\.600 0\.600,25\.300,-0\.360\$" "$SHIM_LOG"
+printf '%s' '{"x":0.8,"y":24,"z":-1.6,"face":{"x":0.6,"y":25.3,"z":-0.36}}' > "$TMP/one.json"
+look @alice/game-1 "$TMP/spot2.png" 2 --spot "$TMP/one.json" > /dev/null 2>&1; check "  a single spot on its own works too" test $? -eq 0
+printf '%s' '{"spots":[{"x":1,"y":24,"z":2}]}' > "$TMP/noface.json"
+printf '%s' '{"spots":[{"x":1e9,"y":24,"z":2,"face":{"x":0,"y":0,"z":0}}]}' > "$TMP/huge.json"
+printf '%s' '{"spots":[{"x":"1","y":24,"z":2,"face":{"x":0,"y":0,"z":0}}]}' > "$TMP/text.json"
+printf 'not json' > "$TMP/bad.json"
+ln -s "$TMP/card.json" "$TMP/link.json"
+head -c 70000 /dev/zero | tr '\0' ' ' > "$TMP/big.json"
+for bad in "$TMP/noface.json" "$TMP/huge.json" "$TMP/text.json" "$TMP/bad.json" "$TMP/link.json" "$TMP/big.json" "$TMP/missing.json" "$TMP"; do
+  : > "$SHIM_LOG"
+  look @alice/game-1 "$TMP/spot3.png" 2 --spot "$bad" > /dev/null 2>&1; rc=$?
+  check "an odd spot file (${bad##*/}) is refused before anything joins" bash -c "test $rc -ne 0 && ! grep -q 'client join' '$SHIM_LOG'"
+done
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/spot4.png" 2 --spot "$TMP/card.json" --at 1,2,3 > /dev/null 2>&1; rc=$?
+check "--spot cannot be mixed with --at" bash -c "test $rc -ne 0 && ! grep -q 'client join' '$SHIM_LOG'"
 for bad in "--yaw x" "--yaw 1000" "--pitch 90" "--pitch" "--turn 5" "--yaw 5 --yaw"; do
   : > "$SHIM_LOG"
   # shellcheck disable=SC2086
