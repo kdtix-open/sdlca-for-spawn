@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Upload one finished 3D model (.glb) to a world's assets and print the /cdn/ address that a scene points at.
+# usage: sdlca-asset <account> <@owner/world> <model.glb> [--dry-run]
+#
+# This is Spawn's documented asset door (PUT /api/sdk/v1/<worldId>/assets/value.<sha256>.glb, and the three-call road for a file over
+# 4.4 MB), the same one that Spawn's own upload tool uses, with the account's token. The file name is its own hash, so uploading the
+# same bytes again changes nothing ("exists"). The agent must be an editor of the world; the world must be one this account serves.
+# Needs no skeleton (a body does, a prop does not). It only takes a real glTF binary, and it takes nothing else: no other file type.
+#
+# The file is stored with that world's assets under a public address (anyone who knows it can fetch it), and Spawn screens it. It does
+# not go into the world's git files, so the world's arrival budget is untouched. Upload only a model that you have looked at and that
+# you may upload. An agent may run this for its own account only (SDLCA_TURN_ACCOUNT): the person who runs the kit can name any.
+# It never changes an agent's body. With --dry-run it only reads from Spawn and says what it would do.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+
+case "${1:-}" in
+  -h | --help) usage_header "$0"; exit 0 ;;
+esac
+[ "$#" -ge 3 ] && [ "$#" -le 4 ] || die "usage: sdlca-asset <account> <@owner/world> <model.glb> [--dry-run]   (try --help)"
+ACCOUNT_ARG="$1"
+WORLD="$2"
+FILE="$3"
+APPLY=--apply
+if [ "$#" -eq 4 ]; then
+  [ "$4" = --dry-run ] || die "the only option is --dry-run"
+  APPLY=
+fi
+[ -z "${SDLCA_TURN_ACCOUNT:-}" ] || [ "$ACCOUNT_ARG" = "$SDLCA_TURN_ACCOUNT" ] ||
+  die "inside an agent turn only the turn's own account ($SDLCA_TURN_ACCOUNT) may be named"
+[[ "$WORLD" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "the world must look like @owner/world"
+[[ "$FILE" != -* ]] || die "the model's path must not start with a dash"
+load_account "$ACCOUNT_ARG"
+export SDLCA_ASSET_MODE=1
+# shellcheck disable=SC2086  # APPLY is either empty or one word
+exec python3 -I -B "$SDLCA_CODE_DIR/lib/body.py" --carry "$FILE" --world "$WORLD" $APPLY

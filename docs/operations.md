@@ -495,6 +495,15 @@ This does not delete the agent account on Spawn. That is done in Spawn.
 
 The owner can mention the agent with `/spawn` (stays for `SDLCA_PRESENCE_TTL` seconds, 3600 by default), `/spawn ttl 600` (10 to 14400 seconds) or `/leave`. The handler runs `spawn client join <the world the message came from> --render none` itself, so no agent turn is started, and a second `/spawn` replaces the first. Only the owner's line counts, and only when it is exactly the command. It needs a world the account serves (a direct message has none). The log has a `PRESENCE` line; the client's own output is thrown away because a join can print a credential. Spawn's client always has a time limit, which is why `/spawn` alone is not forever.
 
+## Putting a finished model in a world
+
+An agent that made a model (with Tripo, say) uploads it with `sdlca-asset <account> <@owner/world> <model.glb>`. It prints an address like `https://www.spawn.co/cdn/value.<sha256>.glb`, and a scene points at that. Allow it with `"Bash($SDLCA_CODE_DIR/bin/sdlca-asset *)"` in `SDLCA_AGENT_CMD`. Facts:
+
+- It is Spawn's documented asset door, `PUT /api/sdk/v1/<worldId>/assets/value.<sha256>.glb`, with a three-call road for a file over 4.4 MB. The agent must be an editor of the world. Uploading the same bytes again answers `exists` and changes nothing.
+- Models do not go into the world's git files. Savi's rule for `@lanthief/game-1`: keep generator output outside the clone, upload only what passed a look, then place it.
+- The file is public by its hash address, and Spawn screens it. `--dry-run` reads and says what it would do. An agent turn may name only its own account, and the command never changes a body (`sdlca-body` stays closed to agents).
+- Ask the generator for GLB: Spawn's engine docs name no other model format.
+
 ## Looking from a place
 
 `sdlca-look <account> <@owner/world> <out.png> [wait] --at <x,y,z> --face <x,y,z>` stands the agent's body with its feet at a world position and turns its camera toward a world point, then takes the picture. This is what a world's own spots give: a Try Walk spot is where a tester's feet stand, and its "what to look at" is the point to face. Without `--at` the body stays where it arrived; `--yaw` and `--pitch` override what `--face` works out. Facts from real runs on 2026-11-22:

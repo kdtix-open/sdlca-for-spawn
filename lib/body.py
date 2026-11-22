@@ -944,7 +944,8 @@ def carry_model(client, account, world_id, data, wait, poll):
     say()
     say("done: Spawn %s the file. Its address, named by the file's own hash:" % ("has" if status == "exists" else "carried"))
     say("  " + address)
-    say("to put it on an agent:   sdlca-body <account> --wear %s --apply" % address)
+    if not os.environ.get("SDLCA_ASSET_MODE"):  # sdlca-asset (the command an agent may run) has no use for the body hint
+        say("to put it on an agent:   sdlca-body <account> --wear %s --apply" % address)
 
 
 UNSURE_AFTER = "It may have gone through anyway: run the same command without --apply to see what the agent wears now."
@@ -1060,7 +1061,8 @@ def poll_seconds(env):
 
 def run(argv, env):
     opts = parse_args(argv)
-    if env.get("SDLCA_TURN_ACCOUNT"):
+    # An agent turn may carry a file (bin/sdlca-asset sets SDLCA_ASSET_MODE), which spends nothing and changes no body; nothing else.
+    if env.get("SDLCA_TURN_ACCOUNT") and not (env.get("SDLCA_ASSET_MODE") and opts.carry is not None):
         raise Refuse("an agent turn may not change a body: this is for the person who runs the kit, from their own shell")
     poll = poll_seconds(env) if (opts.picture is not None or opts.job is not None or opts.carry is not None) else MIN_POLL
     account = clean(env.get("ACCOUNT") or "<account>", 80)
@@ -1129,7 +1131,8 @@ def run(argv, env):
         say("  it will:    carry the file to Spawn through that world, %s." % ("in one call" if len(model) <= DIRECT_LIMIT else
                                                                           "by address (three calls; the middle one goes to Spawn's storage, without the token)"))
         say("              The file is stored with that world's assets and served from a public address named by its hash (anyone who knows the")
-        say("              address can fetch it), and Spawn screens it. It prints the address; wear it with --wear. Use only a file you may upload.")
+        say("              address can fetch it), and Spawn screens it. It prints the address.%s Use only a file you may upload." %
+            ("" if env.get("SDLCA_ASSET_MODE") else " Wear it with --wear."))
     elif opts.job is not None:
         say("  it will:    wait for the sculpt %s (up to %d seconds), then wear it. Nothing is made again." % (opts.job, opts.wait))
         try:
