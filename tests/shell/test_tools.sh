@@ -808,6 +808,22 @@ look @alice/game-1 "$TMP/spot.png" 2 --spot "$TMP/card.json" > /dev/null 2>&1; c
 check "  the first spot with a face gave both points" grep -Eq "^BUN: .*/shot\.png 2 - - look[0-9]+ 0\.800,24\.000,-1\.600 0\.600,25\.300,-0\.360\$" "$SHIM_LOG"
 printf '%s' '{"x":0.8,"y":24,"z":-1.6,"face":{"x":0.6,"y":25.3,"z":-0.36}}' > "$TMP/one.json"
 look @alice/game-1 "$TMP/spot2.png" 2 --spot "$TMP/one.json" > /dev/null 2>&1; check "  a single spot on its own works too" test $? -eq 0
+# The file that a Try Walk pin wrote in @lanthief/game-1 on 2026-11-22 (guild-cards/32.spot.json), as it was, extra keys and all.
+cat > "$TMP/pin.json" << 'JSON'
+{
+  "card": 32,
+  "about": "where to stand and look for card #32. world metres. feet = where the body stands, eye = feet + 1.6 m, face = the world point to aim the eye at. no local coordinates here.",
+  "x": 0.5, "y": 24, "z": -1.3,
+  "eye": { "x": 0.5, "y": 25.6, "z": -1.3 },
+  "face": { "x": 0.59, "y": 25.46, "z": -0.35 },
+  "target": "home-root/sdlca-box",
+  "look": "the blue box fills the middle of the frame, the brass plate at its centre about 1 m away",
+  "by": "lanthief (pin), Savi (file)"
+}
+JSON
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/pin.png" 2 --spot "$TMP/pin.json" > /dev/null 2>&1; check "  a real pin file from the world works as it is" test $? -eq 0
+check "    and gave the feet and the face point" grep -Eq "^BUN: .*/shot\.png 2 - - look[0-9]+ 0\.500,24\.000,-1\.300 0\.590,25\.460,-0\.350\$" "$SHIM_LOG"
 printf '%s' '{"spots":[{"x":1,"y":24,"z":2}]}' > "$TMP/noface.json"
 printf '%s' '{"spots":[{"x":1e9,"y":24,"z":2,"face":{"x":0,"y":0,"z":0}}]}' > "$TMP/huge.json"
 printf '%s' '{"spots":[{"x":"1","y":24,"z":2,"face":{"x":0,"y":0,"z":0}}]}' > "$TMP/text.json"
