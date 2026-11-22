@@ -870,8 +870,17 @@ TEXT="/spawn ttl 600"; run "$(event chat_mention @alice ',"relatedGameId":"app-1
 check "the client was asked to join the world for 600 seconds" grep -q -E "client join @alice/game-1 .*--ttl 600" "$SHIM_LOG"
 check "no agent turn ran" test ! -e "$SHIM_OUT/agent-ran"
 check "the log says so" grep -q "PRESENCE joined @alice/game-1 for 600 seconds" "$ACC/handler.log"
+check "the body has a software-rendered page (a resident eye for looks)" grep -q -E "client join @alice/game-1 --name sdlca-presence --ttl 600 --render cpu" "$SHIM_LOG"
+check "the page is recorded for looks, with the world and a time to live" bash -c "python3 -I -B -c 'import json,sys; e=json.load(open(sys.argv[1])); assert e[\"world\"]==\"@alice/game-1\" and e[\"name\"]==\"sdlca-presence\" and e[\"cdp\"].startswith(\"http://127.0.0.1:\") and 590 < e[\"expires\"] - __import__(\"time\").time() <= 600' '$ACC/eye.json'"
+check "  the record is private" test "$(stat -c %a "$ACC/eye.json")" = 600
 TEXT="/leave"; run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"; unset TEXT
 check "/leave ends it" grep -q "PRESENCE left @alice/game-1" "$ACC/handler.log"
+check "  and removes the record" test ! -e "$ACC/eye.json"
+printf 'SDLCA_PRESENCE_RENDER=none\n' >> "$ACC/env"
+: > "$SHIM_LOG"
+TEXT="/spawn ttl 600"; run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"; unset TEXT
+check "with SDLCA_PRESENCE_RENDER=none the body has no page, as before" grep -q -E "client join @alice/game-1 --name sdlca-presence --ttl 600 --render none" "$SHIM_LOG"
+check "  and no record is made" test ! -e "$ACC/eye.json"
 printf '%s' "" > "$SHIM_LOG"
 TEXT="/spawn"; run "$(event chat_mention @carol ',"relatedGameId":"app-111"')"; unset TEXT
 check "a stranger's /spawn does not join" bash -c "! grep -q 'client join' '$SHIM_LOG'"
@@ -904,5 +913,17 @@ with_agent 'true'
 run "$(event chat_mention @alice ',"relatedGameId":"app-111"')"
 check "a link where the ledger folder should be is not written through" test -z "$(ls -A "$TMP/elsewhere")"
 teardown
+
+echo "world guides listed in SDLCA_WORLD_GUIDES reach the prompt, read after the clone update"
+setup; world
+printf 'SDLCA_WORLD_GUIDES="agent-card-loop.md nope.md"\n' >> "$ACC/env"
+with_agent 'cat > "$SHIM_OUT/prompt.txt"'
+push_from_other agent-card-loop.md 'GUIDE-LINE-ONE: push the card file with status try'
+run "$(routed evt-g1)"
+check "a guide that arrived with this turn's clone update is in the prompt" grep -q 'GUIDE-LINE-ONE' "$SHIM_OUT/prompt.txt"
+check "  inside its tag, with the file name" grep -q '<world_guide file="agent-card-loop.md">' "$SHIM_OUT/prompt.txt"
+check "  before the clone note, which stays last" bash -c "test \"\$(grep -n 'GUIDE-LINE-ONE' '$SHIM_OUT/prompt.txt' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'Clone status' '$SHIM_OUT/prompt.txt' | tail -1 | cut -d: -f1)\""
+check "  and the trace says it was added" grep -q '"ev":"guides"' "$ACC/trace.jsonl"
+end_world
 
 finish

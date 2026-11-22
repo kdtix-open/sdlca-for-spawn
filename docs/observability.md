@@ -65,10 +65,26 @@ The hints are rules of thumb that say where to look: looks taking most of the ti
 3. If it is a look, the sub-lines say which part: the join, a wait for the world to draw, placing or aiming. More than one blank picture means the first wait was too short.
 4. Change one thing, run the same ask again, and compare the two turns.
 
+## The baseline, and comparing a change with it
+
+The first measured turn (2026-11-22, a card-fix ask with four looks) took 858.8 s: the agent 857 s, of which 781 s was looks (91%). The trace showed why. Each look paid about 14 s to join and 8 s of first wait, and its first picture attempt always timed out (status 124, 53 s) while the world loaded. Fifteen picture attempts made six pictures: four timed out, four hit "page too busy" (status 3, about 41 s each), and one failed. Placing the body ran 15 times for 4 looks. The model's own share was 56 s.
+
+To see what a change does, run the same kind of ask before and after it and compare:
+
+```bash
+bin/sdlca-trace lanthief --compare --transcripts   # the last two turns: A, B and B - A
+bin/sdlca-trace lanthief --compare <turn A> <turn B> --transcripts --json
+```
+
+The table has the whole turn, lock wait, clone update, agent time, looks (count and time), joining versus attaching to a resident body, picture attempts (failed, blank), chat, and, with `--transcripts`, model-and-other time, model calls and tokens.
+
+## The resident eye
+
+`/spawn` keeps the body in the world with a software-rendered page and writes where that page is to `accounts/<account>/eye.json` (mode 0600; the world, the page's local address, and when the body ends). A look that finds that record, in the same world, not about to expire, with its page answering, attaches to it. Its trace shows `look.attach` (milliseconds) where it used to show `look.join` and a long wait. If anything about the record is wrong the look joins cold, as before, and the trace says `look.attach_failed`. The cost: a software-rendered page runs for as long as the body stays (the time you gave `/spawn`, 3600 s by default, or until `/leave`). `SDLCA_PRESENCE_RENDER=none` goes back to a body with no page, and `SDLCA_LOOK_RESIDENT=0` makes looks ignore the record.
+
 ## Not built yet (planned)
 
-- A body that stays in the world (a resident eye), so that a look is a screenshot and not a cold join. This is the largest saving the numbers above point at.
 - A state-change log for a world's own board (a card's status over time) next to the kit's trace.
-- Counting the agent's model calls and tokens per turn.
+- Comparing against a saved baseline file instead of two turns in the trace.
 
 Unofficial community project, not affiliated with Spawn. Licensed under Apache-2.0.

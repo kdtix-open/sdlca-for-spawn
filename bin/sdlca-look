@@ -389,8 +389,10 @@ cleanup() {
     kill -s TERM "$CHILD" 2> /dev/null
     wait "$CHILD" 2> /dev/null
   fi
-  timeout -k 2 10 spawn client leave --name "$NAME" > /dev/null 2>&1 < /dev/null
-  stop_page
+  if [ -z "${RESIDENT:-}" ]; then # a resident body belongs to /spawn, and stays
+    timeout -k 2 10 spawn client leave --name "$NAME" > /dev/null 2>&1 < /dev/null
+    stop_page
+  fi
   if [ -n "${HAVE_LOCK:-}" ] && [ "$(cat "$LOCK/pid" 2> /dev/null)" = "$$" ]; then rm -rf "$LOCK"; fi
   cd / 2> /dev/null # not inside the folder that is removed next
   rm -rf "$WORK"
@@ -489,6 +491,40 @@ except OSError as error:
     sys.exit("sdlca-look: could not save the picture at %s: %s (something appeared there while the look ran, or the folder is gone)" % (dst, error.strerror or type(error).__name__))'
 
 SECONDS=0
+# A resident body: /spawn (the handler's presence command) keeps the agent's body in the world with a software-rendered page and records
+# that page in $ACC/eye.json. A look that finds it still there, in this world and not about to expire, attaches to it: no cold join and
+# no wait for the world to load, which was most of a look's time (docs/observability.md). SDLCA_LOOK_RESIDENT=0 turns this off. The record is
+# written by the handler from the client's own "page :" line, in the account's folder, so it is not text that anyone in a chat could plant.
+# shellcheck disable=SC2016  # Python, not shell
+EYE_PY='import json, os, re, stat, sys, time
+path, world = sys.argv[1], sys.argv[2]
+try:
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 4096 or info.st_uid != os.getuid():
+        sys.exit(1)
+    with open(path, encoding="utf-8") as handle:
+        eye = json.load(handle)
+    name, cdp = eye["name"], eye["cdp"]
+    if not (re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) and re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", cdp)):
+        sys.exit(1)
+    if eye.get("world") != world or float(eye["expires"]) < time.time() + 45:
+        sys.exit(1)
+    print(name, cdp)
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)'
+RESIDENT=""
+if [ "${SDLCA_LOOK_RESIDENT:-1}" != 0 ] && [ -f "$ACC/eye.json" ]; then
+  eye_t0="$(now_ms)"
+  if EYE_OUT="$(python3 -I -B -c "$EYE_PY" "$ACC/eye.json" "$WORLD" 2> /dev/null)" && python3 -I -B -c 'import sys, urllib.request
+urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[1] + "/json/version", timeout=3).read(1)' "${EYE_OUT##* }" > /dev/null 2>&1; then
+    NAME="${EYE_OUT%% *}" CDP="${EYE_OUT##* }" RESIDENT=1
+    [ "$WAIT" -le 2 ] || WAIT=2 # the world is already drawn
+    trace look.attach dur_ms=$(($(now_ms) - eye_t0)) eye="$NAME"
+  else
+    trace look.attach_failed dur_ms=$(($(now_ms) - eye_t0)) note="no_usable_resident_body_so_a_cold_join"
+  fi
+fi
+if [ -z "$RESIDENT" ]; then
 JOIN_RC=0
 run_limited "$(left)" bash -c "$JOIN_SH" _ "$WORLD" "$NAME" "$((LIMIT + 30))" "$WORK/page" "$PAGE_SED" "$RENDER" "$WIDTH" "$HEIGHT" || JOIN_RC=$?
 trace look.join dur_ms=$(($(now_ms) - LOOK_T0)) rc="$JOIN_RC"
@@ -506,6 +542,7 @@ for pid in $(listener_pids "${CDP##*:}"); do
   born_after_us "$pid" ||
     die "the page address names port ${CDP##*:}, which a program that was already running before this look began holds; refusing to attach to it, because it is not a browser that this join started"
 done
+fi
 [ "$(left)" -ge 1 ] || die "the join used up the time limit of $LIMIT seconds (SDLCA_LOOK_TIMEOUT) before the screenshot could start"
 # The software renderer draws nothing until the world has loaded, which can take a minute or more, so the first pictures are blank (about
 # 4 KB; a real scene is many times that). The first picture is taken after wait-seconds. While a picture is blank this waits

@@ -142,6 +142,25 @@ class AnalyzerTests(unittest.TestCase):
         result = self.run_trace("--json")
         self.assertEqual(len(result.stdout.splitlines()), 1)
 
+    def test_compare_puts_two_turns_side_by_side(self):
+        fast = [dict(r, turn="t1700000500000-2", ts=r["ts"] + 500000) for r in self.slow_turn() if r["ev"] not in ("look.shot", "shot.wait")]
+        fast = [r for r in fast if r["ev"] != "look.end"] + [event("t1700000500000-2", "look.end", self.t0 + 510000, total_ms=20000, rc=0),
+                                                              event("t1700000500000-2", "look.attach", self.t0 + 505000, dur_ms=300)]
+        for r in fast:
+            if r["ev"] == "agent.end":
+                r["dur_ms"] = 60000
+            if r["ev"] == "turn.end":
+                r["total_ms"] = 61000
+        self.write(self.slow_turn("t1700000000000-1") + fast)
+        result = self.run_trace("--compare")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for words in ("compare  A t1700000000000-1", "B t1700000500000-2", "whole turn (s)", "180.5", "61.0", "-119.5", "looks (s)", "attaching to a resident body (s)"):
+            self.assertIn(words, result.stdout)
+        as_json = json.loads(self.run_trace("--compare", "t1700000000000-1", "t1700000500000-2", "--json").stdout)
+        self.assertEqual(as_json["b"]["whole turn (s)"], 61.0)
+        self.assertEqual(self.run_trace("--compare", "t1700000000000-1").returncode, 2)
+        self.assertEqual(self.run_trace("--compare", "t1700000000000-1", "t1700000000009-9").returncode, 1)
+
     def test_an_empty_trace_says_so(self):
         result = self.run_trace()
         self.assertEqual(result.returncode, 1)
@@ -165,9 +184,10 @@ class AnalyzerTests(unittest.TestCase):
 
         rows = [
             {"type": "user", "timestamp": at(0), "message": {"content": "SECRET CHAT TEXT sak_notreal"}},
-            {"type": "assistant", "timestamp": at(2), "message": {"content": [{"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "/k/bin/sdlca-look alice @alice/game-1 /tmp/x.png"}}]}},
+            {"type": "assistant", "timestamp": at(1), "message": {"id": "m1", "usage": {"input_tokens": 2, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 10}, "content": [{"type": "text", "text": "PRIVATE THOUGHT"}]}},
+            {"type": "assistant", "timestamp": at(2), "message": {"id": "m1", "usage": {"input_tokens": 2, "output_tokens": 40, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 10}, "content": [{"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "/k/bin/sdlca-look alice @alice/game-1 /tmp/x.png"}}]}},
             {"type": "user", "timestamp": at(160), "message": {"content": [{"type": "tool_result", "tool_use_id": "a", "content": "PRIVATE OUTPUT"}]}},
-            {"type": "assistant", "timestamp": at(162), "message": {"content": [{"type": "tool_use", "id": "b", "name": "Edit", "input": {"file_path": "/x"}}]}},
+            {"type": "assistant", "timestamp": at(162), "message": {"id": "m2", "usage": {"input_tokens": 3, "output_tokens": 60, "cache_read_input_tokens": 200, "cache_creation_input_tokens": 0}, "content": [{"type": "tool_use", "id": "b", "name": "Edit", "input": {"file_path": "/x"}}]}},
             {"type": "user", "timestamp": at(163), "message": {"content": [{"type": "tool_result", "tool_use_id": "b", "content": "ok"}]}},
         ]
         with open(os.path.join(folder, "s.jsonl"), "w") as handle:
@@ -179,6 +199,8 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Bash: sdlca-look", result.stdout)
         self.assertIn("158.0 s", result.stdout)
         self.assertIn("Edit", result.stdout)
+        self.assertIn("model calls: 2; tokens: 5 new input, 300 read from cache, 10 written to cache, 100 output", result.stdout)
+        self.assertNotIn("PRIVATE THOUGHT", result.stdout + result.stderr)
         self.assertNotIn("SECRET CHAT TEXT", result.stdout + result.stderr)
         self.assertNotIn("PRIVATE OUTPUT", result.stdout + result.stderr)
         self.assertNotIn("sak_", result.stdout)

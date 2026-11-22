@@ -97,6 +97,43 @@ if [ "$EVENT_ID" != "-" ] && handled_before "$EVENT_ID"; then
   exit 0
 fi
 
+# presence_join <world> <seconds>: the agent's body joins the world and STAYS, with a software-rendered page (SDLCA_PRESENCE_RENDER, cpu by
+# default; none makes a body with no page, as before). The page address is taken from the client's own "page :" line, the same way
+# sdlca-look takes it, and recorded in $ACC/eye.json so that a look can attach to this body instead of joining the world cold each time
+# (docs/observability.md). Nothing else the client prints is kept: a join can print credentials.
+EYE_NOTE=""
+presence_join() {
+  local world="$1" ttl="$2" render="${SDLCA_PRESENCE_RENDER:-cpu}" page="$RUN/scratch/$ACCOUNT/eye.page" size_args="" rc=0 port t0
+  [[ "$render" == cpu || "$render" == none ]] || render=cpu
+  if [ "$render" = cpu ] && [ -n "${SDLCA_LOOK_WIDTH:-}" ] && [ -n "${SDLCA_LOOK_HEIGHT:-}" ] && [[ "$SDLCA_LOOK_WIDTH$SDLCA_LOOK_HEIGHT" =~ ^[0-9]+$ ]]; then
+    size_args="--width $SDLCA_LOOK_WIDTH --height $SDLCA_LOOK_HEIGHT"
+  fi
+  EYE_NOTE=""
+  rm -f "$page"
+  t0="$(now_ms)"
+  # shellcheck disable=SC2086,SC2016  # size_args is two flags and two numbers that were checked above; the inner shell expands its own arguments
+  ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 180 bash -c 'spawn client join "$1" --name sdlca-presence --ttl "$2" --render "$3" $4 2>&1 < /dev/null | sed -u -n -E "$5" > "$6"; exit "${PIPESTATUS[0]}"' _ "$world" "$ttl" "$render" "$size_args" \
+    's#^[[:space:]]*page[[:space:]]*:[[:space:]]*(http://127\.0\.0\.1:[1-9][0-9]{0,4})([/[:space:]].*)?$#\1#p' "$page" ) || rc=$?
+  trace presence.join dur_ms=$(($(now_ms) - t0)) rc="$rc" render="$render" ttl="$ttl"
+  if [ "$rc" -ne 0 ]; then rm -f "$page"; return 1; fi
+  if [ "$render" = cpu ]; then
+    # exactly one page address, or no resident body is recorded (a look then joins cold, as before)
+    if [ "$(sort -u "$page" 2> /dev/null | wc -l | tr -d ' ')" = 1 ]; then
+      port="$(sort -u "$page")"
+      python3 -I -B -c 'import json, os, sys, time
+acc, name, cdp, world, ttl = sys.argv[1:6]
+tmp = os.path.join(acc, "eye.json.tmp")
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+    json.dump({"name": name, "cdp": cdp, "world": world, "expires": time.time() + float(ttl), "ttl": int(ttl)}, handle)
+os.replace(tmp, os.path.join(acc, "eye.json"))' "$ACC" sdlca-presence "$port" "$world" "$ttl" 2> /dev/null && EYE_NOTE="a resident eye for looks is at $port" || EYE_NOTE="the resident eye could not be recorded"
+    else
+      EYE_NOTE="no single page address was printed, so looks will join cold"
+    fi
+  fi
+  rm -f "$page"
+  return 0
+}
+
 # The owner's presence commands (/spawn, /spawn ttl <seconds>, /leave) are done here by the kit, with no agent turn and no model:
 # the agent's body joins the world the message came from, or leaves. lib/command.py decides; only the owner can give one.
 COMMAND="$(printf '%s' "$EVENT" | OWNER="$OWNER" python3 -I -B "$SDLCA_CODE_DIR/lib/command.py" 2> /dev/null)" || COMMAND="-"
@@ -107,10 +144,11 @@ case "$COMMAND" in
     if [[ "$ADDR" =~ ^@{1,2}[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
       # Nothing the client prints is kept: a join can print credentials. It runs in the account's scratch folder, never in a clone.
       ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 20 spawn client leave --name sdlca-presence > /dev/null 2>&1 < /dev/null ) || true
+      rm -f "$ACC/eye.json" # the resident body (below) is gone with the session
       if [ "$COMMAND" = leave ]; then
         log_line "PRESENCE left $ADDR (asked by $SENDER)"
-      elif ( cd "$RUN/scratch/$ACCOUNT" && timeout -k 5 180 spawn client join "$ADDR" --name sdlca-presence --ttl "${COMMAND#join }" --render none > /dev/null 2>&1 < /dev/null ); then
-        log_line "PRESENCE joined $ADDR for ${COMMAND#join } seconds (asked by $SENDER)"
+      elif presence_join "$ADDR" "${COMMAND#join }"; then
+        log_line "PRESENCE joined $ADDR for ${COMMAND#join } seconds (asked by $SENDER)${EYE_NOTE:+; $EYE_NOTE}"
       else
         log_line "WARN PRESENCE the join to $ADDR did not work"
       fi
@@ -257,6 +295,14 @@ LOCK_T0="$(now_ms)"
       *) refresh_status=failed refresh_code=error refresh_text="the update gave no usable answer" ;;
     esac
     refresh_text="${refresh_text//[[:cntrl:]]/ }"
+    # Guides that the world's own builders wrote for agents (SDLCA_WORLD_GUIDES: clone-relative file names), read AFTER the update so that
+    # they are as new as the clone. They go before the clone note, which stays the last paragraph of the prompt.
+    if [ -n "${SDLCA_WORLD_GUIDES:-}" ]; then
+      guides_t0="$(now_ms)"
+      guides="$(python3 -I -B "$SDLCA_CODE_DIR/lib/render_prompt.py" --guides "$CWD" 2> /dev/null)" || guides=""
+      [ -z "$guides" ] || PROMPT="$PROMPT"$'\n\n'"$guides"
+      trace guides dur_ms=$(($(now_ms) - guides_t0)) chars="${#guides}"
+    fi
     if [ "$refresh_code" != off ]; then
       log_line "WORLD $ADDR clone $refresh_status/$refresh_code: ${refresh_text:0:200}"
       PROMPT="$PROMPT"$'\n\n'"$(clone_note "$refresh_status" "$refresh_code" "$ADDR")"

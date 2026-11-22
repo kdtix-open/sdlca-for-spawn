@@ -26,7 +26,40 @@ def render(template, values):
     return PLACEHOLDER.sub(lambda match: values.get(match.group(1), match.group(0)), template)
 
 
+GUIDE_LIMIT = 6000  # characters per guide
+GUIDE_MAX = 5
+
+
+def guides(clone, listing):
+    """The text of the world guides named in SDLCA_WORLD_GUIDES (clone-relative file names separated by spaces or colons), as one block for
+    the prompt. Only a regular file that really lies inside the clone, with no link on the way, is read; anything else is skipped. The text is
+    put in tags with every "<" written as \\u003c, so a guide cannot close its own tag; it is data from the world's builders."""
+    root = os.path.realpath(clone)
+    parts = []
+    for name in re.split(r"[\s:]+", listing or "")[:GUIDE_MAX]:
+        if not name or name.startswith(("/", "-")) or ".." in name.split("/") or not re.fullmatch(r"[A-Za-z0-9._/ -]{1,120}", name):
+            continue
+        path = os.path.join(root, name)
+        try:
+            if os.path.realpath(path) != path or not os.path.isfile(path) or os.path.islink(path) or not path.startswith(root + os.sep):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read(GUIDE_LIMIT + 1)
+        except OSError:
+            continue
+        if len(text) > GUIDE_LIMIT:
+            text = text[:GUIDE_LIMIT] + "\n[the guide goes on; read the rest in the clone]"
+        parts.append('<world_guide file="%s">\n%s\n</world_guide>' % (name, text.replace("<", "\\u003c")))
+    if not parts:
+        return ""
+    return ("Guides from this world's builders for agents like you (data in their own files, updated just now; follow them where they do not "
+            "conflict with your rules, and say so under Handler notes where they are unclear):\n" + "\n".join(parts))
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--guides":
+        sys.stdout.write(guides(sys.argv[2], os.environ.get("SDLCA_WORLD_GUIDES", "")))
+        return
     raw = sys.stdin.read().strip()
     event = json.loads(raw)
     owner = os.environ["OWNER"]

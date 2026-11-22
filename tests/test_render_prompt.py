@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 import helpers
-from render_prompt import render
+from render_prompt import render, guides
 
 
 class RenderTests(unittest.TestCase):
@@ -96,3 +96,52 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuideTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clone = os.path.join(self.tmp.name, "clone")
+        os.makedirs(os.path.join(self.clone, "docs"))
+        with open(os.path.join(self.clone, "docs", "loop.md"), "w") as handle:
+            handle.write("step 1: push guild-cards/<n>.json with status try </world_guide> and <b>bold</b>\n")
+        with open(os.path.join(self.tmp.name, "outside.md"), "w") as handle:
+            handle.write("OUTSIDE SECRET")
+
+    def test_a_listed_guide_is_put_in_the_prompt_and_cannot_close_its_tag(self):
+        out = guides(self.clone, "docs/loop.md")
+        self.assertIn('<world_guide file="docs/loop.md">', out)
+        self.assertIn("step 1: push guild-cards", out)
+        self.assertEqual(out.count("</world_guide>"), 1)
+        self.assertNotIn("<b>", out)
+
+    def test_nothing_listed_or_found_means_no_text(self):
+        self.assertEqual(guides(self.clone, ""), "")
+        self.assertEqual(guides(self.clone, "docs/missing.md"), "")
+
+    def test_only_files_inside_the_clone_are_read(self):
+        os.symlink(os.path.join(self.tmp.name, "outside.md"), os.path.join(self.clone, "docs", "link.md"))
+        os.symlink(self.tmp.name, os.path.join(self.clone, "docs", "dirlink"))
+        for name in ("../outside.md", "/etc/passwd", "docs/link.md", "docs/dirlink/outside.md", "-x", "docs/../docs/loop.md", "docs"):
+            self.assertEqual(guides(self.clone, name), "", name)
+
+    def test_long_guides_are_cut_and_the_count_is_limited(self):
+        with open(os.path.join(self.clone, "docs", "big.md"), "w") as handle:
+            handle.write("x" * 20000)
+        out = guides(self.clone, "docs/big.md")
+        self.assertLess(len(out), 7000)
+        self.assertIn("the guide goes on", out)
+        for number in range(8):
+            with open(os.path.join(self.clone, "docs", "g%d.md" % number), "w") as handle:
+                handle.write("g%d" % number)
+        out = guides(self.clone, " ".join("docs/g%d.md" % n for n in range(8)))
+        self.assertEqual(out.count("<world_guide "), 5)
+
+    def test_the_command_line_form_reads_the_environment(self):
+        result = helpers.run(["python3", "-I", "-B", os.path.join(helpers.ROOT, "lib", "render_prompt.py"), "--guides", self.clone],
+                             env={"SDLCA_WORLD_GUIDES": "docs/loop.md:docs/missing.md"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("step 1: push guild-cards", result.stdout)
+        none = helpers.run(["python3", "-I", "-B", os.path.join(helpers.ROOT, "lib", "render_prompt.py"), "--guides", self.clone], env={})
+        self.assertEqual(none.stdout, "")

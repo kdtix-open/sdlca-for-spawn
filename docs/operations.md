@@ -504,6 +504,11 @@ An agent that made a model (with Tripo, say) uploads it with `sdlca-asset <accou
 - The file is public by its hash address, and Spawn screens it. `--dry-run` reads and says what it would do. An agent turn may name only its own account, and the command never changes a body (`sdlca-body` stays closed to agents).
 - Ask the generator for GLB: Spawn's engine docs name no other model format.
 
+## The resident eye, and world guides
+
+- `/spawn` keeps a software-rendered body in the world, and `sdlca-look` attaches to its page instead of joining cold: see [Observability](observability.md#the-resident-eye) for what it saves and costs. Settings: `SDLCA_PRESENCE_RENDER` (`cpu`, the default, or `none`), `SDLCA_LOOK_RESIDENT=0` to ignore it, and `SDLCA_LOOK_WIDTH` and `SDLCA_LOOK_HEIGHT` for the frame size of both.
+- `SDLCA_WORLD_GUIDES="docs/agent-card-loop.md"` in the account's `env` puts that file of the world's own clone in the agent's prompt on every turn, after the clone update (clone-relative names, separated by spaces or colons, at most 5 files of 6000 characters). It is for rules a world's builders wrote for agents. The text is data: it sits inside tags, and the prompt says to follow it only where it does not conflict with the kit's rules.
+
 ## Looking from a place
 
 `sdlca-look <account> <@owner/world> <out.png> [wait] --at <x,y,z> --face <x,y,z>` stands the agent's body with its feet at a world position and turns its camera toward a world point, then takes the picture. This is what a world's own spots give: a Try Walk spot is where a tester's feet stand, and its "what to look at" is the point to face. Without `--at` the body stays where it arrived; `--yaw` and `--pitch` override what `--face` works out. Facts from real runs on 2026-11-22:

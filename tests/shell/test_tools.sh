@@ -838,6 +838,52 @@ done
 : > "$SHIM_LOG"
 look @alice/game-1 "$TMP/spot4.png" 2 --spot "$TMP/card.json" --at 1,2,3 > /dev/null 2>&1; rc=$?
 check "--spot cannot be mixed with --at" bash -c "test $rc -ne 0 && ! grep -q 'client join' '$SHIM_LOG'"
+echo "  a look attaches to a resident body instead of joining cold"
+cat > "$TMP/eye-server.py" << 'PY'
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+server = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(server.server_port, flush=True)
+server.serve_forever()
+PY
+python3 -I -B "$TMP/eye-server.py" > "$TMP/eye-port" & EYE_SERVER=$!
+for _ in $(seq 1 50); do [ -s "$TMP/eye-port" ] && break; sleep 0.1; done
+EYE_PORT="$(cat "$TMP/eye-port")"
+write_eye() { # write_eye <world> <seconds from now> <port>
+  python3 -I -B -c 'import json, sys, time; json.dump({"name": "sdlca-presence", "cdp": "http://127.0.0.1:" + sys.argv[3], "world": sys.argv[1], "expires": time.time() + float(sys.argv[2]), "ttl": 3600}, open(sys.argv[4], "w"))' "$1" "$2" "$3" "$ACC/eye.json"
+  chmod 600 "$ACC/eye.json"
+}
+write_eye @alice/game-1 600 "$EYE_PORT"
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/eye1.png" 60 > /dev/null 2>&1; check "a look with a resident body works" test $? -eq 0
+check "  it did not join" bash -c "! grep -q 'client join' '$SHIM_LOG'"
+check "  it did not make the resident body leave" bash -c "! grep -q 'client leave' '$SHIM_LOG'"
+check "  the screenshot tool was told the resident page and body, and a short wait (the world is already drawn)" grep -Eq "^BUN: .*/shot\.png 2 - - sdlca-presence - -\$" "$SHIM_LOG"
+check "  the record is still there" test -e "$ACC/eye.json"
+for case in "expired:@alice/game-1:10:$EYE_PORT" "another world:@alice/game-2:600:$EYE_PORT" "nothing listening:@alice/game-1:600:1"; do
+  IFS=: read -r label world secs port <<< "$case"
+  write_eye "$world" "$secs" "$port"
+  : > "$SHIM_LOG"
+  look @alice/game-1 "$TMP/eye2-${label// /-}.png" 2 > /dev/null 2>&1
+  check "a resident body that is $label is not used: the look joins cold" grep -q 'client join @alice/game-1' "$SHIM_LOG"
+done
+write_eye @alice/game-1 600 "$EYE_PORT"
+: > "$SHIM_LOG"
+SDLCA_LOOK_RESIDENT=0 look @alice/game-1 "$TMP/eye3.png" 2 > /dev/null 2>&1
+check "SDLCA_LOOK_RESIDENT=0 joins cold" grep -q 'client join @alice/game-1' "$SHIM_LOG"
+printf '{"name": "x; touch %s/pwned", "cdp": "http://127.0.0.1:%s", "world": "@alice/game-1", "expires": 9999999999}' "$TMP" "$EYE_PORT" > "$ACC/eye.json"
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/eye4.png" 2 > /dev/null 2>&1
+check "a record with an odd name is refused (and nothing in it is run)" bash -c "grep -q 'client join @alice/game-1' '$SHIM_LOG' && test ! -e '$TMP/pwned'"
+printf '{"name": "sdlca-presence", "cdp": "http://evil.example:80", "world": "@alice/game-1", "expires": 9999999999}' > "$ACC/eye.json"
+: > "$SHIM_LOG"
+look @alice/game-1 "$TMP/eye5.png" 2 > /dev/null 2>&1
+check "a record that names a page off this machine is refused" grep -q 'client join @alice/game-1' "$SHIM_LOG"
+kill "$EYE_SERVER" 2> /dev/null; wait "$EYE_SERVER" 2> /dev/null
+rm -f "$ACC/eye.json"
 for bad in "--yaw x" "--yaw 1000" "--pitch 90" "--pitch" "--turn 5" "--yaw 5 --yaw"; do
   : > "$SHIM_LOG"
   # shellcheck disable=SC2086
